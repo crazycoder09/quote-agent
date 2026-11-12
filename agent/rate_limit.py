@@ -87,6 +87,14 @@ def estimate_tokens(messages: Sequence[Any], tools: Optional[Sequence[Any]] = No
     return int(tokens * 1.08) + max_output
 
 
+DAILY_RECHECK_SECONDS = 3600.0  # daily limit with no reset time given: look again after an hour
+
+
+def _has_retry_time(message: str) -> bool:
+    m = _RETRY_IN.search(message or "")
+    return bool(m and any(m.groups()))
+
+
 def _retry_after(message: str) -> float:
     m = _RETRY_IN.search(message or "")
     if not m or not any(m.groups()):
@@ -225,6 +233,10 @@ def invoke_with_budget(llm: Any, model: str, messages: Sequence[Any], tools: Opt
                 raise
             message = str(exc)
             wait = _retry_after(message)
+            if _is_daily(message) and not _has_retry_time(message):
+                # e.g. OpenRouter "free-models-per-day" gives no reset time: skip this model for an hour
+                # instead of re-trying it on every call (each retry costs the customer ~0.5 s).
+                wait = DAILY_RECHECK_SECONDS
             if _is_daily(message) or wait > MAX_SHORT_WAIT:
                 _budget.mark_exhausted(model, wait)
                 raise DailyLimitReached(model, wait, message) from exc
@@ -265,10 +277,10 @@ def _invoke_chain(role: str, make_runnable: Callable[[Any], Any],
         if remaining:
             waits.append(remaining)
             continue
-        # Switch providers instantly when a model's per-minute budget is full; only the LAST
-        # usable model in the chain is allowed to wait for its window.
-        later = [m for m in chain[chain.index(model) + 1:] if not _budget.exhausted_for(m)]
-        allow_wait = not later
+        # Never wait on one model: a busy model is skipped at once (marked busy until its window frees).
+        # When EVERY model is busy, invoke_with_fallbacks waits once for whichever frees up first.
+        # (Waiting inline on the last model used to retry e.g. Cloudflare 3 x 61 s while Groq was free in 20 s.)
+        allow_wait = False
         runnable = make_runnable(get_llm(role, temperature=temperature, model=model))
         try:
             for factor in (0.85, 0.6):  # retry once, tighter, if the request is too large
@@ -308,13 +320,15 @@ def invoke_with_fallbacks(role: str, make_runnable: Callable[[Any], Any],
                           accept: Optional[Callable[[Any], bool]] = None) -> Tuple[Any, str]:
     """
     Run a call on the role's model chain, switching providers instantly on limits/outages.
-    If every model is only briefly busy (per-minute windows), wait for the soonest one once.
+    Only when EVERY model is busy: wait for the one that frees up first (per-minute windows), then
+    run the chain again from the top (preferred model first).
     """
-    for attempt in range(2):
+    attempts = 3
+    for attempt in range(attempts):
         try:
             return _invoke_chain(role, make_runnable, messages_for, tools, max_output, notify, temperature, accept)
         except AllModelsBusy as exc:
-            if attempt == 1 or exc.retry_after > MAX_SHORT_WAIT:
+            if attempt == attempts - 1 or exc.retry_after > MAX_SHORT_WAIT:
                 raise
             if notify:
                 notify(int(exc.retry_after) + 1)

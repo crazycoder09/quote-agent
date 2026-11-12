@@ -562,7 +562,7 @@ def run_turn(text, resume: bool = False, upload: dict | None = None, show_user: 
                 for mode, chunk in graph.stream(graph_input, config,
                                                 stream_mode=["updates", "custom"]):
                     if mode == "custom" and "waiting_seconds" in (chunk or {}):
-                        status.update(label=f"Waiting {chunk['waiting_seconds']}s for the Groq rate limit...")
+                        status.update(label=f"All AI models are busy - continuing in {chunk['waiting_seconds']}s...")
                         continue
                     for node, output in (chunk or {}).items():
                         if node == "agent":

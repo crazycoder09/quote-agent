@@ -21,23 +21,26 @@
   "models": {
     "agent": [
       "groq:openai/gpt-oss-120b",
-      "cloudflare:@cf/openai/gpt-oss-120b",
       "openrouter:nvidia/nemotron-3.5-super-vl:free",
-      "cloudflare:@cf/zai-org/glm-4.7-flash",
+      "openrouter:openrouter/free",
       "groq:openai/gpt-oss-20b",
-      "openrouter:openrouter/free"
+      "groq:qwen/qwen3.8-27b",
+      "cloudflare:@cf/openai/gpt-oss-120b",
+      "cloudflare:@cf/zai-org/glm-4.7-flash"
     ],
     "router": [
       "groq:openai/gpt-oss-20b",
-      "cloudflare:@cf/zai-org/glm-4.7-flash",
       "openrouter:baidu/ernie-5.5-flash-preview:free",
-      "openrouter:openrouter/free"
+      "openrouter:openrouter/free",
+      "groq:qwen/qwen3.8-27b",
+      "cloudflare:@cf/zai-org/glm-4.7-flash"
     ],
     "memory": [
       "groq:qwen/qwen3.8-27b",
-      "cloudflare:@cf/zai-org/glm-4.7-flash",
       "openrouter:baidu/ernie-5.5-flash-preview:free",
-      "openrouter:openrouter/free"
+      "openrouter:openrouter/free",
+      "groq:openai/gpt-oss-20b",
+      "cloudflare:@cf/zai-org/glm-4.7-flash"
     ],
     "agent_max_output_tokens": 2048,
     "agent_reasoning_effort": "low",
