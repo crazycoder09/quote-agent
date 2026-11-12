@@ -20,13 +20,23 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Literal, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from agent.rate_limit import invoke_with_fallbacks
 from agent.uploads.files import Page, upload_settings
 
 
-class ExtractedItem(BaseModel):
+class _NullsAsMissing(BaseModel):
+    """Vision models often send null for fields they have nothing for (e.g. "alternatives": null).
+    Treat null as 'not given' so the field's default applies, instead of failing the whole page."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_nulls(cls, data: Any) -> Any:
+        return {k: v for k, v in data.items() if v is not None} if isinstance(data, dict) else data
+
+
+class ExtractedItem(_NullsAsMissing):
     code: str = Field(description="Cabinet/accessory code EXACTLY as written (e.g. BER36-L, W3036, B15L). Never correct it.")
     quantity: int = Field(default=1, ge=1, description="How many: a written quantity, or how many times this label appears")
     description: Optional[str] = Field(default=None, description="Words written next to it, or what the drawing shows (e.g. 'corner lazy susan')")
@@ -35,7 +45,7 @@ class ExtractedItem(BaseModel):
     alternatives: List[str] = Field(default_factory=list, description="Other possible readings when unsure (e.g. ['W3036','W3O36'])")
 
 
-class PageReading(BaseModel):
+class PageReading(_NullsAsMissing):
     readable: bool = Field(description="False if the page is blank, too blurry or not related to cabinets")
     document_type: Literal["layout_drawing", "cabinet_list", "quote_or_order", "photo_of_room", "other"]
     items: List[ExtractedItem] = Field(default_factory=list)
