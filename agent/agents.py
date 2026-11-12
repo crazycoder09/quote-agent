@@ -1,7 +1,7 @@
 """
 agents.py
 ---------
-Shared setup for the Helper Quote agent:
+Shared setup for the Quote Agent agent:
 
     - Groq LLM client (LangChain ChatGroq, reasoning model)
     - Project paths
@@ -30,7 +30,7 @@ GROQ_MODEL_NAME = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.json"
 PLAYBOOK_PATH = PROJECT_ROOT / "knowledge" / "quoting_playbook.md"
-STORAGE_DIR = Path(os.getenv("HELPER_QUOTE_STORAGE", PROJECT_ROOT / "storage"))
+STORAGE_DIR = Path(os.getenv("QUOTE_AGENT_STORAGE_STORAGE", PROJECT_ROOT / "storage"))
 CHECKPOINT_DB_PATH = STORAGE_DIR / "conversations.db"
 STORE_DB_PATH = STORAGE_DIR / "long_term_memory.db"
 
@@ -170,7 +170,7 @@ def _make_llm(model_id: str, temperature: float, reasoning_effort: str | None, m
         extra = {"reasoning": {"effort": reasoning_effort}} if reasoning_effort else None
         return ChatOpenAI(model=name, api_key=api_key, base_url=PROVIDERS["openrouter"]["base_url"],
                           temperature=temperature, max_tokens=max_tokens, max_retries=0, timeout=120,
-                          default_headers={"X-Title": "Helper Quote"}, extra_body=extra)
+                          default_headers={"X-Title": "Quote Agent"}, extra_body=extra)
     kwargs = {"reasoning_effort": reasoning_effort} if reasoning_effort and "gpt-oss" in name else {}
     return ChatGroq(model=name, api_key=api_key, temperature=temperature, max_tokens=max_tokens,
                     max_retries=0, **kwargs)
@@ -248,6 +248,12 @@ def load_settings() -> Dict[str, Any]:
 
 def load_playbook() -> str:
     return _read_cached(PLAYBOOK_PATH, lambda text: text)
+
+
+def load_knowledge(name: str) -> str:
+    """A playbook part in knowledge/ (e.g. playbook_uploads.md); empty if the file is missing."""
+    path = PROJECT_ROOT / "knowledge" / name
+    return _read_cached(path, lambda text: text) if path.exists() else ""
 
 
 def resolve_path(path: str | os.PathLike) -> Path:

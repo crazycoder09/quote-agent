@@ -1,7 +1,7 @@
-# Helper Quote — Agentic Cabinet Quoting Chatbot
+# Quote Agent — Agentic Cabinet Quoting Chatbot
 
 A chat assistant that turns a customer's cabinet list into a professional quote in
-minutes instead of days. The customer (or a staff member) chats with **Helper Quote**,
+minutes instead of days. The customer (or a staff member) chats with **Quote Agent**,
 which asks for anything missing, reads the **live brand price sheets**, applies the
 owner's quoting rules, and produces a numbered, downloadable quote. It also estimates
 countertops, handles and installation.
@@ -117,7 +117,10 @@ the LangGraph checkpoint the next time the chat is opened.
 ## Teaching it (no code)
 
 - **`knowledge/quoting_playbook.md`**: the owner's rules in plain English (color → brand,
-  code conversions, countertop/handle/install formulas and rates, tone).
+  code conversions, countertop/handle/install formulas and rates, tone). Two more playbook parts are
+  sent to the assistant only when they matter, to save tokens on every step:
+  `knowledge/playbook_uploads.md` (section 7, once files are attached in a chat) and
+  `knowledge/playbook_sheet_reading.md` (section 4, while a brand has no verified sheet guide).
 - **Staff mode** (set `STAFF_PIN` in `.env`): teach rules in chat; manage them in the sidebar.
 - **`knowledge/sheet_guides/<BRAND>.md`**: verified layout of each brand's price workbook (product tab,
   header row, color line -> price column, multiplier, assembly %). Brands without a guide are
@@ -143,6 +146,7 @@ agent/
   quote_document.py         Printable HTML quote
   agents.py                 Groq LLM, settings, playbook loading
 knowledge/quoting_playbook.md   Owner's quoting rules (edit freely)
+knowledge/playbook_*.md         Playbook parts sent only when needed (uploads, sheet reading)
 config/settings.json            Company info + price sheet sources
 storage/                        Memory databases (created at runtime, git-ignored)
 ```

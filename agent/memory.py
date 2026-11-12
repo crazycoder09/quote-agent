@@ -1,7 +1,7 @@
 """
 memory.py
 ---------
-All of Helper Quote's memory, built on LangGraph's persistence layer:
+All of Quote Agent's memory, built on LangGraph's persistence layer:
 
     Short-term (per conversation)  -> SqliteSaver checkpointer
         every message, tool call and result in a chat, restored when the chat

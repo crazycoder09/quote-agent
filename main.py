@@ -1,7 +1,7 @@
 """
 main.py
 -------
-Streamlit chat UI for Helper Quote - an agentic quoting assistant.
+Streamlit chat UI for Quote Agent - an agentic quoting assistant.
 
 This file only handles the page: sidebar, chat bubbles, live progress and the
 quote card. The agent (LangGraph) lives in agent/graph.py, its tools in
@@ -37,7 +37,7 @@ AVATAR_DATA_URI = "data:image/svg+xml;base64," + base64.b64encode(Path(AVATAR).r
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-st.set_page_config(page_title="Helper Quote", page_icon=AVATAR, layout="centered")
+st.set_page_config(page_title="Quote Agent", page_icon=AVATAR, layout="centered")
 
 SUGGESTIONS = [
     "I need a quote for 2 W2136 in white shaker",
@@ -207,7 +207,7 @@ def render_sidebar() -> None:
     with st.sidebar:
         st.markdown(
             f'<div class="brand"><img src="{AVATAR_DATA_URI}" alt=""><div>'
-            '<div class="brand-name">Helper Quote</div>'
+            '<div class="brand-name">Quote Agent</div>'
             '<div class="brand-tag"><span class="live-dot"></span>Helper is live</div>'
             "</div></div>",
             unsafe_allow_html=True,
@@ -520,7 +520,7 @@ def render_suggestions(messages) -> str | None:
 def render_welcome() -> str | None:
     with st.chat_message("assistant", avatar=AVATAR):
         bubble(
-            "Hi! I'm **Helper Quote**. Send me your cabinet list (item codes and quantities) and the "
+            "Hi! I'm **Quote Agent**. Send me your cabinet list (item codes and quantities) and the "
             "color you want, and I'll put together a quote right away. I can also estimate countertops, "
             "handles and installation."
         )
@@ -586,7 +586,7 @@ def run_turn(text, resume: bool = False, upload: dict | None = None, show_user: 
                                "Upgrade to Groq Dev tier or add fallback models in config/settings.json.")
                 return
             except Exception as exc:  # noqa: BLE001
-                logging.getLogger("helper_quote.app").exception(
+                logging.getLogger("quote_agent.app").exception(
                     "turn failed (thread %s)", st.session_state["thread_id"])
                 status.update(label="Something went wrong", state="error", expanded=False)
                 bubble("Sorry, something went wrong on my side while working on that. "
@@ -658,7 +658,7 @@ def main() -> None:
 
     st.markdown(
         f'<div class="topbar"><div><div class="eyebrow">{date.today().strftime("%A %d %B")}</div>'
-        '<div class="title">Helper Quote</div></div>'
+        '<div class="title">Quote Agent</div></div>'
         '<div class="live"><div class="live-pill"><span class="live-dot"></span>HELPER ON</div>'
         f'<div class="live-face"><img src="{AVATAR_DATA_URI}" alt=""></div></div></div>',
         unsafe_allow_html=True,

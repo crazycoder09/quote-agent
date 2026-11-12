@@ -1,6 +1,6 @@
 # Installation Guide
 
-This guide walks you through setting up and running the **Helper Quote** chatbot on your machine, step by step. No prior experience needed.
+This guide walks you through setting up and running the **Quote Agent** chatbot on your machine, step by step. No prior experience needed.
 
 ## 1. Install Python
 

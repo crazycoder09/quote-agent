@@ -92,7 +92,7 @@ def process_batch(thread_id: str, batch_id: str,
     return {k: result[k] for k in ("batch_id", "pages_read", "pages_failed", "seconds")}
 
 
-@app.task(bind=True, name="helper_quote.read_uploads", max_retries=1, default_retry_delay=20)
+@app.task(bind=True, name="quote_agent.read_uploads", max_retries=1, default_retry_delay=20)
 def read_uploads_task(self, thread_id: str, batch_id: str) -> Dict[str, Any]:
     def celery_progress(pct: int, status: str) -> None:
         self.update_state(state="PROGRESS", meta={"progress": pct, "status": status})

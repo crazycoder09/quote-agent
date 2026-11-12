@@ -27,7 +27,7 @@ from typing import Any, Callable, Deque, Dict, Optional, Sequence, Tuple
 
 from agent.agents import load_settings
 
-log = logging.getLogger("helper_quote.llm")
+log = logging.getLogger("quote_agent.llm")
 
 WINDOW_SECONDS = 60.0
 SAFETY = 0.92            # keep a margin below the hard per-minute limit
@@ -120,11 +120,46 @@ def _is_provider_down(exc: Exception) -> bool:
         "APIConnectionError", "APITimeoutError", "InternalServerError", "ServiceUnavailableError")
 
 
+# Calibrated estimate for the per-minute "is this model busy?" check ONLY. It does not change what is
+# sent to the model (graph._fit_to_model still uses the conservative estimate_tokens()).
+# Measured on Groq gpt-oss: estimate_tokens() says ~5,100 for the agent prompt, the real count is ~3,730,
+# and Groq counts only real usage - max_tokens is NOT reserved against the per-minute limit.
+# Each model's estimate is therefore scaled by the real counts its own responses report.
+DEFAULT_INPUT_RATIO = 0.75     # real prompt tokens / estimate_tokens(), until a model has answered once
+DEFAULT_OUTPUT_TOKENS = 600    # typical reply incl. low-effort reasoning, until a model has answered once
+ESTIMATE_MARGIN = 1.05
+
+
 class TokenBudget:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._usage: Dict[str, Deque[Tuple[float, int]]] = {}
         self._exhausted_until: Dict[str, float] = {}
+        self._input_ratio: Dict[str, float] = {}   # learned: real prompt tokens / estimate_tokens()
+        self._output_avg: Dict[str, float] = {}    # learned: average real completion tokens
+
+    # -- calibrated estimate (budget check only) -----------------------------
+
+    def estimate(self, model: str, messages: Sequence[Any], tools: Optional[Sequence[Any]] = None,
+                 max_output: int = 0) -> Tuple[int, int]:
+        """(tokens to reserve for this call, raw input estimate). Input is scaled by what this model
+        really used before; output is its typical reply length (never more than max_output)."""
+        raw_input = estimate_tokens(messages, tools, 0)
+        ratio = self._input_ratio.get(model, DEFAULT_INPUT_RATIO)
+        output = min(max_output, self._output_avg.get(model, DEFAULT_OUTPUT_TOKENS)) if max_output else 0
+        return int(raw_input * ratio * ESTIMATE_MARGIN + output), raw_input
+
+    def learn(self, model: str, raw_input: int, usage: Dict[str, Any]) -> None:
+        """Calibrate the estimate from the real token counts a response reported."""
+        real_in, real_out = usage.get("input_tokens"), usage.get("output_tokens")
+        with self._lock:
+            if real_in and raw_input:
+                ratio = min(1.5, max(0.3, real_in / raw_input))
+                old = self._input_ratio.get(model)
+                self._input_ratio[model] = ratio if old is None else 0.7 * old + 0.3 * ratio
+            if real_out is not None:
+                old = self._output_avg.get(model)
+                self._output_avg[model] = float(real_out) if old is None else 0.7 * old + 0.3 * float(real_out)
 
     @staticmethod
     def limit_for(model: str) -> Optional[int]:
@@ -212,7 +247,7 @@ def invoke_with_budget(llm: Any, model: str, messages: Sequence[Any], tools: Opt
     if remaining:
         raise DailyLimitReached(model, remaining)
 
-    needed = estimate_tokens(messages, tools, max_output)
+    needed, raw_input = _budget.estimate(model, messages, tools, max_output)
     for attempt in range(MAX_RETRIES + 1):
         _budget.wait_for_room(model, needed, notify, allow_wait=allow_wait)
         try:
@@ -251,6 +286,7 @@ def invoke_with_budget(llm: Any, model: str, messages: Sequence[Any], tools: Opt
             continue
         usage = getattr(result, "usage_metadata", None) or {}
         _budget.record(model, needed, usage.get("total_tokens"))
+        _budget.learn(model, raw_input, usage)
         usage_log.append((model, int(usage.get("total_tokens") or 0)))
         return result
     raise RuntimeError("unreachable")

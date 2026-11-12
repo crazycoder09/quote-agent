@@ -20,7 +20,7 @@ from agent.uploads.files import upload_settings
 _cfg = upload_settings()
 REDIS_URL = os.getenv("REDIS_URL") or _cfg["redis_url"]
 
-app = Celery("helper_quote", broker=REDIS_URL, backend=REDIS_URL, include=["agent.uploads.tasks"])
+app = Celery("quote_agent", broker=REDIS_URL, backend=REDIS_URL, include=["agent.uploads.tasks"])
 app.conf.update(
     task_acks_late=True,                     # a crashed worker's job is re-delivered
     worker_prefetch_multiplier=1,            # one long job at a time per worker process
