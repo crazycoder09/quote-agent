@@ -1,0 +1,22 @@
+[theme]
+base = "light"
+primaryColor = "#2B1745"
+backgroundColor = "#FBF7F1"
+secondaryBackgroundColor = "#F3EEFF"
+textColor = "#1C0F2D"
+borderColor = "#D9CFEA"
+baseRadius = "0.9rem"
+font = "Plus Jakarta Sans:https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+
+[client]
+toolbarMode = "minimal"
+
+[server]
+maxUploadSize = 200
+
+[theme.sidebar]
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F3EEFF"
+textColor = "#2B1745"
+borderColor = "#F2F1EF"

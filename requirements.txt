@@ -1,0 +1,16 @@
+streamlit
+langchain
+langchain-core
+langchain-groq
+langchain-openai
+langgraph
+langgraph-checkpoint-sqlite
+python-dotenv
+openpyxl
+fpdf2
+pydantic
+celery[redis]
+pypdf
+pypdfium2
+pillow-heif
+cryptography

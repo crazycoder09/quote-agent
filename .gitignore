@@ -1,0 +1,12 @@
+.env
+.venv/
+venv/
+.claude/
+__pycache__/
+*.pyc
+*.log
+storage/
+
+# Client price workbooks contain confidential dealer pricing - keep them out of the (public) repo
+*.xlsm
+*.xlsx
