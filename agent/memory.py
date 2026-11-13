@@ -11,7 +11,6 @@ All of Quote Agent's memory, built on LangGraph's persistence layer:
         ("customers",)          customer profiles: contact details + facts/preferences
         ("quotes", <customer>)  every quote created for that customer
         ("learned_rules",)      business rules staff taught in chat (procedural memory)
-        ("sheet_notes",)        workbook layouts the agent learned by itself
         ("handoffs",)           chats the agent handed to a human designer ("Needs you")
         ("threads",)            chat list + which customer each chat belongs to
 
@@ -34,10 +33,14 @@ from agent.agents import CHECKPOINT_DB_PATH, STORAGE_DIR, STORE_DB_PATH
 CUSTOMERS = ("customers",)
 LEARNED_RULES = ("learned_rules",)
 THREADS = ("threads",)
-SHEET_NOTES = ("sheet_notes",)
 HANDOFFS = ("handoffs",)
 
 _lock = threading.Lock()
+# Read-modify-write of one record (thread, customer) must be atomic: several users' sessions and the
+# background memory writer run in parallel threads of the same process.
+_rw_lock = threading.RLock()
+# Quote numbers are allocated + saved under one lock, so two quotes made at the same moment never share a number.
+quote_lock = threading.Lock()
 _singletons: Dict[str, Any] = {}
 
 
@@ -87,6 +90,12 @@ def upsert_customer(phone: str, name: Optional[str] = None, email: Optional[str]
     key = customer_key(phone)
     if not key:
         return None
+    with _rw_lock:
+        return _upsert_customer(key, phone, name, email, address, facts)
+
+
+def _upsert_customer(key: str, phone: str, name: Optional[str], email: Optional[str], address: Optional[str],
+                     facts: Optional[List[str]]) -> str:
     current = get_customer(key) or {"phone": phone, "facts": [], "created_at": now()}
     for field, value in (("name", name), ("email", email), ("address", address), ("phone", phone)):
         if value:
@@ -193,33 +202,6 @@ def delete_learned_rule(rule_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sheet notes (layout the agent learned about each workbook)
-# ---------------------------------------------------------------------------
-
-def save_sheet_notes(brand: str, notes: str, sheet_last_updated: str) -> None:
-    get_store().put(SHEET_NOTES, brand, {"notes": notes.strip(), "sheet_last_updated": sheet_last_updated,
-                                         "saved_at": now()})
-
-
-def sheet_guides() -> Dict[str, Dict[str, Any]]:
-    """Verified, owner-editable layout guides: knowledge/sheet_guides/<BRAND>.md."""
-    from agent.agents import PROJECT_ROOT
-
-    folder = PROJECT_ROOT / "knowledge" / "sheet_guides"
-    if not folder.is_dir():
-        return {}
-    return {f.stem: {"notes": f.read_text(encoding="utf-8").strip(), "verified": True}
-            for f in sorted(folder.glob("*.md"))}
-
-
-def sheet_notes() -> Dict[str, Dict[str, Any]]:
-    """Layout knowledge per brand: verified guides win over notes the agent learned by itself."""
-    learned = {i.key: i.value for i in get_store().search(SHEET_NOTES, limit=100)}
-    guides = sheet_guides()
-    return {**{k: v for k, v in learned.items() if k.lower() not in {g.lower() for g in guides}}, **guides}
-
-
-# ---------------------------------------------------------------------------
 # Threads (chat list + chat -> customer link)
 # ---------------------------------------------------------------------------
 
@@ -229,15 +211,18 @@ def get_thread(thread_id: str) -> Dict[str, Any]:
 
 
 def update_thread(thread_id: str, **fields: Any) -> None:
-    current = get_thread(thread_id) or {"created_at": now()}
-    current.update({k: v for k, v in fields.items() if v is not None})
-    current["updated_at"] = now()
-    get_store().put(THREADS, thread_id, current)
+    with _rw_lock:
+        current = get_thread(thread_id) or {"created_at": now()}
+        current.update({k: v for k, v in fields.items() if v is not None})
+        current["updated_at"] = now()
+        get_store().put(THREADS, thread_id, current)
 
 
-def list_threads(limit: int = 25) -> List[Dict[str, Any]]:
+def list_threads(limit: int = 25, owner: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Most recent chats. With owner: only the chats started in that browser (customers never see
+    other customers' chats); without: every chat (staff)."""
     items = get_store().search(THREADS, limit=1000)
-    rows = [{"thread_id": i.key, **i.value} for i in items]
+    rows = [{"thread_id": i.key, **i.value} for i in items if owner is None or i.value.get("owner") == owner]
     return sorted(rows, key=lambda r: r.get("updated_at", ""), reverse=True)[:limit]
 
 

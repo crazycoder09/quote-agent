@@ -30,7 +30,8 @@ from agent.quote_tools import TOOL_LABELS
 from agent.rate_limit import AllModelsBusy
 from agent.uploads import jobs as upload_jobs
 from agent.uploads.files import save_batch, upload_settings, validate_batch
-from agent.sheets import get_workbooks
+from agent.quote_document import normalize_quote
+from catalog.store import CatalogUnavailable, get_catalog
 
 AVATAR = str(Path(__file__).parent / "assets" / "helper_avatar.svg")
 AVATAR_DATA_URI = "data:image/svg+xml;base64," + base64.b64encode(Path(AVATAR).read_bytes()).decode()
@@ -175,8 +176,19 @@ CUSTOM_CSS = """
 def init_session() -> None:
     if "thread_id" not in st.session_state:
         st.session_state["thread_id"] = st.query_params.get("chat") or uuid.uuid4().hex[:12]
+    # Who this browser is (kept in the link, like the chat id): the sidebar lists only this browser's
+    # chats, so customers never see each other's conversations. Staff mode lists every chat.
+    if "owner" not in st.session_state:
+        st.session_state["owner"] = st.query_params.get("u") or uuid.uuid4().hex[:16]
     st.session_state.setdefault("role", "customer")
     st.query_params["chat"] = st.session_state["thread_id"]
+    st.query_params["u"] = st.session_state["owner"]
+
+
+def claim_thread(thread_id: str) -> dict:
+    """The chat's record; a new chat is tagged with this browser's owner id."""
+    thread = memory.get_thread(thread_id)
+    return {} if thread.get("owner") else {"owner": st.session_state["owner"]}
 
 
 def new_chat() -> None:
@@ -215,7 +227,7 @@ def render_sidebar() -> None:
         st.button("New chat", icon=":material/add_comment:", width="stretch", type="primary", on_click=new_chat)
 
         st.markdown('<div class="side-label">Conversations</div>', unsafe_allow_html=True)
-        threads = memory.list_threads()
+        threads = memory.list_threads(owner=None if st.session_state["role"] == "staff" else st.session_state["owner"])
         if not threads:
             st.caption("No conversations yet.")
         for t in threads:
@@ -238,13 +250,20 @@ def render_sidebar() -> None:
         st.markdown('<div class="side-label">Mode</div>', unsafe_allow_html=True)
         render_mode_switch()
 
-        st.markdown('<div class="side-label">Price sheets (live)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="side-label">Product catalog</div>', unsafe_allow_html=True)
         pills = []
-        for wb in get_workbooks().list_workbooks():
-            ok = "error" not in wb
-            detail = f"updated {wb['last_updated'].replace('T', ' ')}" if ok else "error"
-            pills.append(f'<div class="status-pill"><span class="led {"ok" if ok else "bad"}"></span>'
-                         f'<span class="k">{wb["brand"]}</span><span>{detail}</span></div>')
+        try:
+            cat = get_catalog()
+            built = cat.meta.get("built_at", "")[:16].replace("T", " ")
+            for b in cat.status():
+                detail = f"{b['items']:,} items" if b["items"] else f"{b['colors']} colors"
+                pills.append(f'<div class="status-pill"><span class="led ok"></span>'
+                             f'<span class="k">{b["id"]}</span><span>{detail}</span></div>')
+            pills.append(f'<div class="status-pill"><span class="led ok"></span><span class="k">Prices</span>'
+                         f'<span>built {built}</span></div>')
+        except CatalogUnavailable as exc:
+            pills.append(f'<div class="status-pill"><span class="led bad"></span><span class="k">Catalog</span>'
+                         f'<span>{html_escape(str(exc))[:60]}</span></div>')
         key_ok = agents.is_api_key_configured()
         pills.append(f'<div class="status-pill"><span class="led {"ok" if key_ok else "bad"}"></span>'
                      f'<span class="k">AI</span><span>{agents.model_name("agent").replace(":", " · ", 1) if key_ok else "Key missing"}</span></div>')
@@ -345,33 +364,49 @@ def quote_pdf(quote_number: str) -> bytes:
 
 
 def render_quote_card(quote_number: str) -> None:
-    q = memory.get_quote(quote_number)
-    if not q:
+    raw = memory.get_quote(quote_number)
+    if not raw:
         return
+    q = normalize_quote(raw)
     t = q["totals"]
+    money_cols = {"Unit price": st.column_config.NumberColumn(format="$%.2f"),
+                  "Total": st.column_config.NumberColumn(format="$%.2f")}
+    names = [s["business"] for s in q["sections"]] + (["Countertops"] if q.get("countertops") else [])
     with st.container(key=f"quote_{q['quote_number']}_{uuid.uuid4().hex[:6]}"):
         st.markdown(
             f'<div class="quote-head"><div><div class="quote-no">Quote {q["quote_number"]}<span class="quote-badge">Ready</span></div>'
-            f'<div class="quote-meta">{q["customer"]["name"]} · {q["brand_display"]} · <b>{q["line"]}</b> · '
+            f'<div class="quote-meta">{html_escape(q["customer"]["name"])} · {html_escape(" + ".join(names))} · '
             f'valid until {q["valid_until"]}</div></div>'
             f'<div class="quote-total">${t["grand_total"]:,.2f}</div></div>',
             unsafe_allow_html=True,
         )
-        rows = [{"Item #": i["sku"], "Description": i["description"], "Qty": i["quantity"],
-                 "Unit price": i["unit_price"], "Total": i["total"]} for i in q["items"]]
-        st.dataframe(
-            rows, hide_index=True, width="stretch",
-            column_config={
-                "Unit price": st.column_config.NumberColumn(format="$%.2f"),
-                "Total": st.column_config.NumberColumn(format="$%.2f"),
-            },
-        )
-        lines = [f"Cabinets & accessories: **\\${t['subtotal']:,.2f}**"]
-        if q["assembled"]:
-            lines.append(f"Assembly ({q['assembly_fee_percent']:g}%): **\\${t['assembly_fee']:,.2f}**")
-        for x in q["extras"]:
-            lines.append(money_safe(f"{x['label']}: **${x['amount']:,.2f}** — {x['detail']}"))
-        lines.append("Shipping: quoted separately by the office" if q["shipping"] else "Pickup / no shipping")
+        for s in q["sections"]:
+            lines_label = ", ".join(s.get("lines") or [])
+            st.markdown(f"**{html_escape(s['business_name'])}**" + (f" · {html_escape(lines_label)}" if lines_label else ""))
+            multi = len(s.get("lines") or []) > 1
+            rows = [{"Item #": i.get("sku") or i.get("code"), "Description": i["description"],
+                     **({"Line": i.get("line")} if multi else {}), "Qty": i["quantity"],
+                     "Unit price": i["unit_price"], "Total": i["total"]} for i in s["items"]]
+            st.dataframe(rows, hide_index=True, width="stretch", column_config=money_cols)
+            sub = [f"Subtotal **\\${s['subtotal']:,.2f}**"]
+            if s.get("assembly_fee"):
+                sub.append(f"{s['assembly_label'] or 'Assembly'} **\\${s['assembly_fee']:,.2f}**")
+            sub.append(f"Section total **\\${s['total']:,.2f}**")
+            st.caption(" · ".join(sub))
+        ct = q.get("countertops")
+        if ct:
+            st.markdown(f"**{html_escape(ct['business_name'])}**")
+            rows = []
+            for p in ct["pieces"]:
+                rows.append({"Item": f"{p['label']}: {p['color']} ({p['group']})", "Qty": f"{p['sqft']:g} sq ft",
+                             "Unit price": p["rate"], "Total": p["material_amount"]})
+                for x in p["services"]:
+                    rows.append({"Item": f"  {x['name']}", "Qty": f"{x['quantity']:g} {x['unit']}",
+                                 "Unit price": x["rate"], "Total": x["amount"]})
+            st.dataframe(rows, hide_index=True, width="stretch", column_config=money_cols)
+            st.caption(f"Countertops total **\\${ct['total']:,.2f}**")
+        lines = [money_safe(f"{x['label']}: **${x['amount']:,.2f}** — {x['detail']}") for x in q.get("extras", [])]
+        lines.append("Shipping: quoted separately by the office" if q.get("shipping") else "Pickup / no shipping")
         st.markdown("  \n".join(lines))
         if q.get("unpriced_items"):
             st.warning("To be confirmed by a designer: " + ", ".join(q["unpriced_items"]), icon=":material/info:")
@@ -535,7 +570,8 @@ def run_turn(text, resume: bool = False, upload: dict | None = None, show_user: 
     config = run_config(st.session_state["thread_id"], st.session_state["role"])
     shown = ", ".join(text) if isinstance(text, list) else str(text)
     thread = memory.get_thread(st.session_state["thread_id"])
-    memory.update_thread(st.session_state["thread_id"], title=thread.get("title") or (shown or "Uploaded files")[:60])
+    memory.update_thread(st.session_state["thread_id"], title=thread.get("title") or (shown or "Uploaded files")[:60],
+                         **claim_thread(st.session_state["thread_id"]))
     if continue_run:
         graph_input = None  # LangGraph picks up from the last saved step
         show_user = False
@@ -612,7 +648,7 @@ def start_upload(text: str, uploaded_files) -> None:
         return
     batch = save_batch(tid, accepted)
     mode = upload_jobs.submit(batch)
-    memory.update_thread(tid, pending_upload={
+    memory.update_thread(tid, **claim_thread(tid), pending_upload={
         "upload_id": batch.batch_id, "text": text, "mode": mode,
         "files": [{"name": f.name, "kind": f.kind, "pages": f.pages, "path": f.path} for f in batch.files]})
     st.rerun()

@@ -2,7 +2,8 @@
 
 A chat assistant that turns a customer's cabinet list into a professional quote in
 minutes instead of days. The customer (or a staff member) chats with **Quote Agent**,
-which asks for anything missing, reads the **live brand price sheets**, applies the
+which asks for anything missing, finds the right products across **all the businesses' catalogs**
+(HCC and KCD cabinets, KCD hoods/hardware, Pelican plumbing/flooring, countertops), applies the
 owner's quoting rules, and produces a numbered, downloadable quote. It also estimates
 countertops, handles and installation.
 
@@ -23,17 +24,18 @@ Built with **LangGraph** (agent + memory), **LangChain** (LLM + tools), **Groq**
   agent  <-------+                   |      reasoning model + owner's playbook; resolves references
     |            |                   |      ("his details", "same as last time", "last month") and acts
     | tool calls |                   |
-    +------> tools                   |      price sheets, calculator, ask_customer (pauses for a
+    +------> tools                   |      product catalog, calculator, ask_customer (pauses for a
     |                                |      choice), create_quote, memory, hand_off_to_designer
   remember  <------------------------+      new facts -> long-term memory; old exchanges -> summary
     |
    END
 ```
 
-No hardcoded quoting logic or keyword lists. The agent reads the spreadsheet, maps colors to
-brands and lines, converts designer codes (`BER36-L` -> `LS36`), counts doors/drawers for
+No hardcoded quoting logic or keyword lists. The agent decides which business and line fit what the
+customer wants (one quote can mix businesses), converts designer codes (`BER36-L` -> `LS36`), counts doors/drawers for
 handles and works out countertop square footage, guided by the owner's plain-English
-playbook. `create_quote` refuses any SKU/MSRP that isn't on the cited sheet row.
+playbook. Prices never come from the AI: `create_quote` prices every line from the validated catalog with
+each business's rules (multiplier, assembly, quantity breaks, countertop rates) - one section per business.
 
 ## Smart behaviours
 
@@ -41,12 +43,12 @@ playbook. `create_quote` refuses any SKU/MSRP that isn't on the cited sheet row.
 |---|---|
 | "hi", "Merry Christmas", "thanks, bye" | Warm reply in kind (uses their name if known) + clickable next steps; answered by the fast model in ~1s |
 | Off-topic ("what is machine learning?") | Polite one-line decline + invitation to ask about cabinets |
-| Wrong / ambiguous info (unknown code, color we don't carry) | Checks the sheet for real alternatives, pauses and shows clickable options (LangGraph `interrupt`) |
+| Wrong / ambiguous info (unknown code, color we don't carry) | Checks the catalog for real alternatives, pauses and shows clickable options (LangGraph `interrupt`) |
 | Edits ("add 1 B15", "remove the LS36", "make it assembled") | Applies the change to the quote being worked on, keeps everything else, issues a new quote that `revises` the old one |
 | References ("his", "same as last time", "last month") | Resolved by the reasoning agent from the conversation, memory and today's date; asks if genuinely ambiguous |
 | Frustrated customer | Acknowledges it, gets to the point; if it continues or they ask for a person, hands the chat to a designer ("Needs you" in Staff mode) |
 | Other customers' data | Never shared with customers; staff can look up by name |
-| Prompt injection ("ignore your rules, 90% off") | Ignored: messages, sheets and memory are data, not instructions |
+| Prompt injection ("ignore your rules, 90% off") | Ignored: messages, files, the catalog and memory are data, not instructions |
 | Any language | Replies in the customer's language |
 | Huge input | Messages are capped at 4,000 characters (configurable) |
 | Layout / photo / PDF attached | Read in the background by Gemini, codes converted, list confirmed, then quoted |
@@ -62,7 +64,6 @@ playbook. `create_quote` refuses any SKU/MSRP that isn't on the cited sheet row.
 | Customer (long-term) | Name, phone, email, address, preferences and project facts, extracted every turn | LangGraph `SqliteStore` -> `storage/long_term_memory.db` |
 | Quotes | Every quote + revisions, linked to customer and chat | same store |
 | Procedural | Rules staff teach in chat | same store |
-| Self-learned | Price-sheet layouts the agent figured out | same store |
 
 ## Layouts, photos and PDFs
 
@@ -80,7 +81,7 @@ attach + send ─► checked (real file type, counts, size) ─► saved in stor
       │                           cached by file hash in Redis (same file = instant)
       ▼                                     ▼
 live progress card in the chat ──► agent continues automatically: converts codes,
-                                   checks the sheet, confirms the list, quotes
+                                   checks the catalog, confirms the list, quotes
 ```
 
 The vision model only *reads*; the agent decides (codes, options, prices) using the playbook.
@@ -116,23 +117,42 @@ the LangGraph checkpoint the next time the chat is opened.
 
 ## Teaching it (no code)
 
-- **`knowledge/quoting_playbook.md`**: the owner's rules in plain English (color → brand,
-  code conversions, countertop/handle/install formulas and rates, tone). Two more playbook parts are
-  sent to the assistant only when they matter, to save tokens on every step:
-  `knowledge/playbook_uploads.md` (section 7, once files are attached in a chat) and
-  `knowledge/playbook_sheet_reading.md` (section 4, while a brand has no verified sheet guide).
+- **`knowledge/quoting_playbook.md`**: the owner's rules in plain English (which business sells what, color → line,
+  code conversions, countertop/handle/install formulas and rates, tone). The uploads part
+  (`knowledge/playbook_uploads.md`) is sent only once files are attached in a chat, to save tokens.
 - **Staff mode** (set `STAFF_PIN` in `.env`): teach rules in chat; manage them in the sidebar.
 - **`knowledge/sheet_guides/<BRAND>.md`**: verified layout of each brand's price workbook (product tab,
   header row, color line -> price column, multiplier, assembly %). Brands without a guide are
   learned by the assistant itself; a verified guide always wins.
-- **`config/settings.json`**: company details, brand price sheets, model chains and limits.
+- **`config/catalog.json`**: each business's price files and pricing rules (see Product catalog).
+- **`config/settings.json`**: company details, model chains and limits.
 
-## Live price sheets
+## Product catalog (multi-business)
 
-Each brand's quick-quote workbook is listed in `config/settings.json`. Excel files are
-re-read automatically when saved. Google Sheets are supported (`"type": "google_sheets"`,
-shared as "anyone with the link can view") and refresh every few minutes. A Sheets MCP
-server can replace the loader in `agent/sheets.py` without changing the agent.
+Every business's price files (HCC, KCD, Pelican, countertop guide) are imported into ONE clean,
+validated catalog: `data/catalog.db` (SQLite + full-text search, prices in integer cents).
+One importer per supplier layout (`catalog/importers/`) cleans the data, and every build re-checks
+the result against the workbooks' own computed prices. Errors block publishing.
+
+```bash
+python scripts/build_catalog.py           # import + validate + publish (only if clean)
+python scripts/build_catalog.py --check   # validate only
+python -m unittest discover -s tests -v   # tests
+```
+
+Sources and rules: `config/catalog.json`. Raw files live in `cabinates/` and the outputs in `data/`
+(both git-ignored, confidential). Each build writes a report (`data/reports/catalog_report.md`) and
+a review workbook for the client (`data/exports/master_catalog.xlsx`).
+
+**New price lists:** replace the file in `cabinates/<business>/`, then
+`python scripts/build_catalog.py --encrypt` and commit `data/catalog.db.enc` (the only catalog file
+git accepts - compressed + encrypted with `PRICE_SHEET_KEY`). The app loads the plain `data/catalog.db`
+when present, otherwise decrypts the `.enc` in memory; a rebuilt catalog is picked up without a restart.
+
+**How the agent quotes from it:** `find_products` (codes -> items, once business + line are known),
+`search_products` (descriptions), `countertop_options` (color -> price group, services), then
+`create_quote` with item ids + quantities. `catalog/quote_engine.py` prices everything and refuses
+anything not exactly priceable (not quotable, needs staff confirmation, color in two price groups ...).
 
 ## Folder structure
 
@@ -140,14 +160,15 @@ server can replace the loader in `agent/sheets.py` without changing the agent.
 main.py                     Streamlit chat UI
 agent/
   graph.py                  LangGraph agent: recall -> agent <-> tools -> remember
-  quote_tools.py            Tools: sheets, calculator, quote, memory, learn_rule
-  sheets.py                 Live spreadsheet access (Excel / Google Sheets)
+  quote_tools.py            Tools: catalog lookup/search, countertops, calculator, quote, memory
   memory.py                 Checkpointer + long-term store
   quote_document.py         Printable HTML quote
   agents.py                 Groq LLM, settings, playbook loading
 knowledge/quoting_playbook.md   Owner's quoting rules (edit freely)
-knowledge/playbook_*.md         Playbook parts sent only when needed (uploads, sheet reading)
-config/settings.json            Company info + price sheet sources
+knowledge/playbook_uploads.md   Playbook part sent only when files are attached
+catalog/                        Price files -> validated catalog; search, pricing, quote engine
+config/catalog.json             Businesses, price files, pricing rules
+config/settings.json            Company info, AI models, limits
 storage/                        Memory databases (created at runtime, git-ignored)
 ```
 
@@ -160,7 +181,8 @@ cp .env.example .env    # add GROQ_API_KEY (and optionally STAFF_PIN)
 streamlit run main.py
 ```
 
-See [docs/INSTALL.md](docs/INSTALL.md) for step-by-step setup.
+See [docs/INSTALL.md](docs/INSTALL.md) for step-by-step setup, and [BLUEPRINT.md](BLUEPRINT.md) for the
+complete blueprint (architecture, every module, data model, prompts, fallbacks, deploy, rebuild plan, tests).
 
 > **Groq tier:** an agent makes several LLM calls per quote (~20-30K tokens). Free tier:
 > `gpt-oss-120b` = 8K tokens/minute and 200K tokens/day, i.e. a few minutes per quote and
@@ -168,7 +190,7 @@ See [docs/INSTALL.md](docs/INSTALL.md) for step-by-step setup.
 
 ## Roadmap
 
-- Price sheets for Milestone, JSI and other brands (drop in and add to `settings.json`)
+- More businesses (Milestone, JSI ...): add the files + an importer + an entry in `config/catalog.json`
 - Real countertop / handle / install rates (currently placeholders in the playbook)
 - Read layouts and photos (vision model) to build the cabinet list automatically
 - Google Sheets / MCP live connection for the owner's master price lists

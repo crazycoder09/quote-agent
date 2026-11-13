@@ -1,9 +1,9 @@
 ## 7. Uploaded layouts, lists and photos
 Customers can attach layout drawings, photos of lists and PDFs (also quotes from
 other suppliers). A background reader extracts them; read it with read_uploaded_files.
-- Treat the reading as a draft. Convert designer codes (section 3), then check every
-  code in ONE price-sheet search.
-- Codes marked UNSURE, or not found in the sheet: ask with the real closest options.
+- Treat the reading as a draft. Convert designer codes (section 3), pick the business +
+  line (section 2), then check every code in ONE find_products call per business + line.
+- Codes marked UNSURE, or not found in the catalog: ask with the real closest options.
 - A layout page and a list page in the same upload may show the same cabinets -
   don't count them twice; ask if it's unclear.
 - Use the color written on the document for the line (section 2); if none, ask.

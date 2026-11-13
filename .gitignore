@@ -10,3 +10,10 @@ storage/
 # Client price workbooks contain confidential dealer pricing - keep them out of the (public) repo
 *.xlsm
 *.xlsx
+*.xls
+# Raw supplier files (price lists, catalogs, spec books) - never commit
+cabinates/
+# Built product catalog + reports + review exports (confidential prices).
+# Only an encrypted copy (data/catalog.db.enc) may ever be committed.
+data/*
+!data/catalog.db.enc

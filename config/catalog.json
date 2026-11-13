@@ -1,0 +1,222 @@
+{
+  "_help": "Sources and rules for building the product catalog (python scripts/build_catalog.py). One entry per business. Paths are relative to the project root. Values marked needs_confirmation are defaults until the client confirms them.",
+  "output": {
+    "db": "data/catalog.db",
+    "report": "data/reports/catalog_report.md",
+    "export": "data/exports/master_catalog.xlsx"
+  },
+  "businesses": {
+    "HCC": {
+      "name": "Heritage Craft Cabinetry - Signature Series",
+      "kind": "RTA kitchen and bath cabinets",
+      "importer": "hcc",
+      "source": "cabinates/HCC/HCC Signature Series Price List,, (1).xlsm",
+      "tab": "Worksheet",
+      "header_row": 27,
+      "first_product_row": 29,
+      "first_section": "Wall Cabinets -- 1 Door",
+      "multiplier_cell": "H7",
+      "line_choice_rows": [
+        12,
+        24
+      ],
+      "lines": [
+        {
+          "id": "colonial-white",
+          "name": "Colonial White",
+          "column": "L"
+        },
+        {
+          "id": "colonial-grey",
+          "name": "Colonial Grey",
+          "column": "M"
+        },
+        {
+          "id": "colonial-cherry",
+          "name": "Colonial Cherry",
+          "column": "N"
+        },
+        {
+          "id": "colonial-espresso",
+          "name": "Colonial Espresso",
+          "column": "O"
+        },
+        {
+          "id": "regal-ivory",
+          "name": "Regal Ivory",
+          "column": "P"
+        },
+        {
+          "id": "regal-truffle",
+          "name": "Regal Truffle",
+          "column": "Q"
+        },
+        {
+          "id": "summit-white",
+          "name": "Summit White",
+          "column": "R"
+        },
+        {
+          "id": "sierra-desert",
+          "name": "Sierra Desert",
+          "column": "S"
+        },
+        {
+          "id": "oxford-white",
+          "name": "Oxford White",
+          "column": "T"
+        },
+        {
+          "id": "colonial-navy",
+          "name": "Colonial Navy",
+          "column": "U"
+        },
+        {
+          "id": "oxford-oak",
+          "name": "Oxford Oak",
+          "column": "V"
+        },
+        {
+          "id": "colonial-timber",
+          "name": "Colonial Timber",
+          "column": "W"
+        },
+        {
+          "id": "a-plus",
+          "name": "A+Plus",
+          "column": "X"
+        }
+      ],
+      "assembly_percent_default": 10,
+      "assembly_label_cell": "Order!I63"
+    },
+    "KCD": {
+      "name": "KCD Cabinetry",
+      "kind": "Cabinets, range hoods, decorative hardware, floating shelves, accessories",
+      "importer": "kcd",
+      "source": "cabinates/KCD/KCD Request for Quote U_0626.xlsm",
+      "multiplier_override": null,
+      "_multiplier_help": "null = use the per-line multipliers in the workbook (cells J7:J22 of 'KCD Request for Quote', currently all 1). Set a number to override every line once the client confirms the dealer multiplier.",
+      "lines": [
+        {
+          "id": "BF",
+          "name": "Brooklyn Fawn"
+        },
+        {
+          "id": "BG",
+          "name": "Brooklyn Gray"
+        },
+        {
+          "id": "BM",
+          "name": "Brooklyn Midnight"
+        },
+        {
+          "id": "BP",
+          "name": "Brooklyn Pearl"
+        },
+        {
+          "id": "BS",
+          "name": "Brooklyn Slate"
+        },
+        {
+          "id": "BW",
+          "name": "Brooklyn White"
+        },
+        {
+          "id": "EG",
+          "name": "Essential Gray"
+        },
+        {
+          "id": "EW",
+          "name": "Essential White"
+        },
+        {
+          "id": "OC",
+          "name": "Oslo Classic Walnut",
+          "aliases": [
+            "Oslo Walnut"
+          ]
+        },
+        {
+          "id": "OO",
+          "name": "Oslo Oak"
+        },
+        {
+          "id": "OW",
+          "name": "Oslo White"
+        },
+        {
+          "id": "SW",
+          "name": "Shaker White (slab door)",
+          "aliases": [
+            "Shaker White",
+            "Shaker Designer White w/ Slab"
+          ]
+        },
+        {
+          "id": "SW5",
+          "name": "Shaker White (5-piece door)",
+          "aliases": [
+            "Shaker Designer White w/ 5PC Door",
+            "Shaker White 5PC"
+          ]
+        },
+        {
+          "id": "SK",
+          "name": "Shaker Kodiak"
+        },
+        {
+          "id": "SM",
+          "name": "Shaker Moss"
+        },
+        {
+          "id": "SS",
+          "name": "Shaker Sand"
+        },
+        {
+          "id": "US",
+          "name": "Unfinished Shaker"
+        },
+        {
+          "id": "PW",
+          "name": "Essential Plywood White"
+        },
+        {
+          "id": "NW",
+          "name": "Napa White"
+        },
+        {
+          "id": "RW",
+          "name": "Raw Wood (hoods / shelves)"
+        },
+        {
+          "id": "BL",
+          "name": "Black (hoods / shelves)"
+        },
+        {
+          "id": "CC",
+          "name": "Clear Coat Walnut (floating shelves)"
+        },
+        {
+          "id": "PR",
+          "name": "Primed Maple (floating shelves)"
+        }
+      ]
+    },
+    "PELICAN": {
+      "name": "Pelican International",
+      "kind": "Sinks, faucets, tubs, toilets, shower doors, vanity tops, quartz slabs, vinyl flooring, mosaics",
+      "importer": "pelican",
+      "source": "cabinates/Pelican/Pelican PriceList.xls",
+      "markup": 1.0,
+      "_markup_help": "Selling price = Pelican price x markup. 1.0 until the client confirms whether the list is cost or selling price."
+    },
+    "ZSOLT": {
+      "name": "Countertops - SQFT Program",
+      "kind": "Fabricated and installed countertops (granite, quartz, Dekton, porcelain) priced per square foot",
+      "importer": "zsolt",
+      "source": "cabinates/Zsolt/Zsolt.xlsx",
+      "colors_pdf": "cabinates/Zsolt/SQFT Program Brochure (2).pdf"
+    }
+  }
+}

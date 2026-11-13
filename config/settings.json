@@ -9,43 +9,37 @@
     "quote_number_prefix": "HQ-",
     "quote_footer": "This is an estimate generated from our current price lists. Final pricing is confirmed by our team before ordering. Shipping, if requested, is quoted separately by the office."
   },
-  "price_sheets": {
-    "HCC": {
-      "display_name": "Heritage Craft Cabinetry - Signature Series",
-      "type": "excel",
-      "path": "Copy of HCC Signature Series Quote.xlsm",
-      "multiplier_cell": "Worksheet!H7",
-      "encrypted_path": "price_lists/HCC.xlsm.enc"
-    }
-  },
   "models": {
     "agent": [
+      "anthropic:claude-haiku-4-5-20251001",
       "groq:openai/gpt-oss-120b",
-      "openrouter:nvidia/nemotron-3.5-super-vl:free",
-      "openrouter:openrouter/free",
       "groq:openai/gpt-oss-20b",
       "groq:qwen/qwen3.8-27b",
+      "openrouter:nvidia/nemotron-3.5-super-vl:free",
+      "openrouter:openrouter/free",
       "cloudflare:@cf/openai/gpt-oss-120b",
       "cloudflare:@cf/zai-org/glm-4.7-flash"
     ],
     "router": [
+      "anthropic:claude-haiku-4-5-20251001",
       "groq:openai/gpt-oss-20b",
+      "groq:qwen/qwen3.8-27b",
       "openrouter:baidu/ernie-5.5-flash-preview:free",
       "openrouter:openrouter/free",
-      "groq:qwen/qwen3.8-27b",
       "cloudflare:@cf/zai-org/glm-4.7-flash"
     ],
     "memory": [
+      "anthropic:claude-haiku-4-5-20251001",
       "groq:qwen/qwen3.8-27b",
+      "groq:openai/gpt-oss-20b",
       "openrouter:baidu/ernie-5.5-flash-preview:free",
       "openrouter:openrouter/free",
-      "groq:openai/gpt-oss-20b",
       "cloudflare:@cf/zai-org/glm-4.7-flash"
     ],
     "agent_max_output_tokens": 2048,
     "agent_reasoning_effort": "low",
     "allow_paid_openrouter_models": false,
-    "_help": "Each role is a chain 'provider:model'. The first is preferred; when it is busy (per-minute limit), at a daily limit, unavailable or down, the next one answers instantly. Providers: groq (GROQ_API_KEY), cloudflare (CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID), openrouter (OPENROUTER_API_KEY, free models only unless allow_paid_openrouter_models), gemini (GEMINI_API_KEY, vision = reading uploaded PDFs/images). For testing you can override a chain in .env, e.g. HQ_MODEL_AGENT=cloudflare:@cf/openai/gpt-oss-120b",
+    "_help": "Each role is a chain 'provider:model': the first answers; when it has no balance, a bad key, a limit, or is down, the next one answers instantly. Order: Anthropic (Claude) -> Groq -> OpenRouter -> Cloudflare. Vision (reading uploaded PDFs/images) is separate: Gemini first. Keys: ANTHROPIC_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY (free models only unless allow_paid_openrouter_models), CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID, GEMINI_API_KEY. Override a chain for testing in .env, e.g. HQ_MODEL_AGENT=groq:openai/gpt-oss-120b",
     "vision": [
       "gemini:gemini-2.5-flash",
       "openrouter:nvidia/nemotron-3.5-super-vl:free"
@@ -57,7 +51,6 @@
     "groq:qwen/qwen3.8-27b": 8000
   },
   "_rate_limits_help": "Tokens-per-minute limit per model, read from Groq's x-ratelimit headers for this account (Groq free tier: 8,000/min, 1,000 requests/day; gpt-oss also 200,000 tokens/day). OpenRouter free models: ~20 requests/min and 50/day on a key without credits. The app waits for per-minute limits and falls back along the chain for daily limits or outages.",
-  "_price_sheets_help": "Add one entry per brand. type 'excel' = local .xlsx/.xlsm (re-read automatically when the file is saved). type 'google_sheets' = live Google Sheet: {\"type\": \"google_sheets\", \"sheet_id\": \"<id from the URL>\", \"refresh_seconds\": 300, \"display_name\": \"...\"} shared as 'anyone with the link can view'. multiplier_cell = the cell holding the price multiplier; its live value is shown to the agent and create_quote must match it. encrypted_path = encrypted copy committed to the repo (scripts/encrypt_price_sheet.py); used when the plain workbook isn't present, unlocked with PRICE_SHEET_KEY.",
   "chat": {
     "max_message_chars": 4000,
     "recent_exchanges_verbatim": 10,

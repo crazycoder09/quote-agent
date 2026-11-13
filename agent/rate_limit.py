@@ -255,6 +255,13 @@ def invoke_with_budget(llm: Any, model: str, messages: Sequence[Any], tools: Opt
         except Exception as exc:  # noqa: BLE001
             _budget.record(model, needed, needed)
             status = getattr(exc, "status_code", None)
+            text = str(exc).lower()
+            if status in (401, 403) or any(k in text for k in ("credit balance", "billing", "insufficient_quota",
+                                                                "invalid x-api-key", "invalid api key")):
+                # no balance / bad or revoked key (Anthropic says "credit balance is too low" with a 400):
+                # skip this provider for an hour, the next one in the chain answers at once
+                _budget.mark_exhausted(model, 3600)
+                raise DailyLimitReached(model, 3600, str(exc)) from exc
             if status in (402, 404) or "model_not_found" in str(exc):
                 # no credit / not available on this account -> let callers fall back
                 _budget.mark_exhausted(model, 3600)

@@ -1,27 +1,25 @@
 """
 quote_tools.py
 --------------
-The agent's tools. They give the agent *access* (price sheets, memory, a
-calculator, the quote document) - all reasoning and decisions (which line,
-which SKU, code conversions, handle counts, countertop size) are made by the
-agent itself, guided by the owner's playbook.
+The agent's tools. They give the agent ACCESS (the product catalog of every business, memory, a
+calculator, the quote document); the agent decides which business, line and items fit the customer,
+guided by the owner's playbook. Prices are never decided by the AI: create_quote prices every line
+from the catalog with each business's rules (catalog/quote_engine.py).
 
-Price sheet (read-only, live)
-    list_price_sheets      brands, tabs, last updated
-    sheet_overview         top + bottom rows of every tab in one call (layout learning)
-    read_price_sheet       raw cells of a row range
-    search_price_sheet     rows containing given texts (SKUs, words)
+Catalog (all businesses: HCC, KCD, Pelican, countertops)
+    find_products          product codes -> items (item_id + price once business and line are known)
+    search_products        descriptions ("white farmhouse sink", "36 inch hood") -> items
+    countertop_options     countertop colors -> price group, rates, cutouts / edges / services
 Math
-    calculator             exact arithmetic
+    calculator             exact arithmetic (quantities: sq ft, handles)
 Clarify (human-in-the-loop)
     ask_customer           pause the graph, show clickable options, resume with the answer
 Quote
-    create_quote           numbered quote; refuses prices that aren't in the sheet
+    create_quote           numbered quote, one section per business; refuses anything it can't price exactly
     get_saved_quote        reopen a past quote
 Long-term memory
     find_customer          returning customer: details, preferences, past quotes
     save_customer_details  remember contact details / preferences right away
-    save_sheet_notes       remember a workbook's layout (self-learned, saves tokens)
     learn_rule             (staff only) teach a new business rule
 Escalation
     hand_off_to_designer   flag the chat "Needs you" for a human designer
@@ -34,8 +32,9 @@ from __future__ import annotations
 import ast
 import json
 import operator
+import re
 from datetime import date, timedelta
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
@@ -44,7 +43,9 @@ from pydantic import BaseModel, Field
 
 from agent import memory
 from agent.agents import load_settings
-from agent.sheets import get_workbooks
+from agent.quote_document import quote_brief
+from catalog.categories import CATEGORIES
+from catalog.store import CatalogUnavailable, fmt_money, get_catalog
 
 
 def _json(data: Any) -> str:
@@ -59,76 +60,191 @@ def _is_staff(config: Optional[RunnableConfig]) -> bool:
     return _configurable(config).get("role") == "staff"
 
 
-def _money(x: float) -> float:
-    return round(float(x) + 1e-9, 2)
-
-
 # ---------------------------------------------------------------------------
-# Price sheet tools
+# Catalog tools
 # ---------------------------------------------------------------------------
 
-@tool
-def list_price_sheets() -> str:
-    """List every brand price workbook that is loaded: brand key, display name,
-    tabs with their sizes, and when the sheet was last updated."""
-    return _json(get_workbooks().list_workbooks())
+def _flags(item: Dict[str, Any]) -> str:
+    out = []
+    if not item["quotable"]:
+        out.append(f"NOT QUOTABLE: {item['not_quotable_reason']}")
+    if item["needs_confirmation"]:
+        out.append(f"NEEDS STAFF CONFIRMATION: {item['needs_confirmation']}")
+    if item["unit"] != "each":
+        out.append(f"per {item['unit']}" + (f" ({item['unit_note']})" if item["unit_note"] else ""))
+    if item["tiers"]:
+        out.append("quantity prices: " + ", ".join(f"{q}+ {fmt_money(p)}" for q, p in item["tiers"]))
+    if item["extra"].get("special_order"):
+        out.append("special order")
+    return (" | " + " | ".join(out)) if out else ""
+
+
+def _item_row(item: Dict[str, Any]) -> str:
+    price = fmt_money(item["unit_price"]) if item["unit_price"] is not None else "no price"
+    line = f" | {item['line_name']}" if item["line_name"] else ""
+    return (f"item_id={item['id']} | {item['business_id']}{line} | {item['code']} | {item['description']} | "
+            f"{price} each{_flags(item)}")
+
+
+def _short_desc(item: Dict[str, Any]) -> str:
+    """KCD descriptions start with the line name ('Brooklyn Fawn Single Door ...') - drop it when grouping lines."""
+    desc = item["description"]
+    if item["line_name"] and desc.lower().startswith(item["line_name"].split(" (")[0].lower()):
+        desc = desc[len(item["line_name"].split(" (")[0]):].strip(" -")
+    return desc
+
+
+def _group_rows(items: List[Dict[str, Any]], limit: int = 10) -> List[str]:
+    """One row per item when it is unique; one row per product when it is offered in several lines."""
+    groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for it in items:
+        groups.setdefault((it["business_id"], it["code_key"]), []).append(it)
+    rows = []
+    for (bid, _), its in list(groups.items())[:limit]:
+        if len(its) == 1:
+            rows.append("  " + _item_row(its[0]))
+            continue
+        prices = [i["unit_price"] for i in its if i["unit_price"] is not None]
+        lines = [i["line_name"] or "-" for i in its]
+        rows.append(f"  {bid} | {its[0]['code']} | {_short_desc(its[0])} | in {len(its)} lines: {', '.join(lines)}"
+                    + (f" | {fmt_money(min(prices))}-{fmt_money(max(prices))}" if prices and min(prices) != max(prices)
+                       else (f" | {fmt_money(prices[0])}" if prices else ""))
+                    + f" -> call again with business=\"{bid}\" and the customer's line to get the item_id")
+    if len(groups) > limit:
+        rows.append(f"  ... {len(groups) - limit} more")
+    return rows
+
+
+def _scope(cat, business: Optional[str], line: Optional[str]) -> tuple:
+    """(business id or None, [line ids] or None, error text or None)"""
+    bid = None
+    if business:
+        bid = cat.resolve_business(business)
+        if not bid:
+            return None, None, f"Unknown business '{business}'. Businesses: {', '.join(cat.businesses)}"
+    line_ids = None
+    if line:
+        found = cat.resolve_line(line, bid)
+        if not found:
+            names = [l["name"] for (b, _), l in cat.lines.items() if not bid or b == bid]
+            return bid, None, (f"No line/color '{line}'" + (f" in {bid}" if bid else "") + ". Lines: " + ", ".join(names)
+                               + ". Map the customer's color with the playbook, or ask them.")
+        line_ids = [l["id"] for l in found]
+        if not bid and len({l["business"] for l in found}) == 1:
+            bid = found[0]["business"]
+    return bid, line_ids, None
 
 
 @tool
-def sheet_overview(brand: str) -> str:
-    """One-call overview of a brand's workbook: the top 30 and last 10 non-empty rows of
-    every tab. Use it ONCE to learn a sheet's layout (line options, multiplier, header row,
-    fees), then save_sheet_notes."""
-    guide = next((v for b, v in memory.sheet_guides().items() if b.lower() == brand.strip().lower()), None)
-    if guide:  # a verified guide already describes this layout - no need for a 3k-token sheet dump
-        return f"{brand} has a VERIFIED layout guide - use it (also in SHEET NOTES):\n{guide['notes']}"
+def find_products(codes: List[str], business: Optional[str] = None, line: Optional[str] = None) -> str:
+    """Look up product CODES in the catalog of every business, e.g. ['W2136', 'B15', 'PL-150', 'HACT3036'].
+    Pass business (HCC, KCD, PELICAN) and line (the customer's color / door style / finish, e.g.
+    'Colonial White', 'Brooklyn Fawn') when known: each code then returns ONE item with its item_id and
+    price. Without them you see which businesses and lines offer each code. Put ALL codes of one
+    business + line in one call. Results say EXACT, or NO EXACT MATCH with the closest real items
+    (different items - ask the customer, never substitute)."""
     try:
-        notes_saved = any(b.lower() == brand.strip().lower() for b in memory.sheet_notes())
-        return get_workbooks().overview(brand) + ("" if notes_saved else (
-            "\n\nNEXT: call save_sheet_notes now with: product tab, header row number, the customer-facing line "
-            "names and the price column each maps to (by order), multiplier value, assembly %. Then continue."))
-    except Exception as exc:  # noqa: BLE001
+        cat = get_catalog()
+    except CatalogUnavailable as exc:
         return _json({"error": str(exc)})
+    bid, line_ids, err = _scope(cat, business, line)
+    if err:
+        return err
+    out = []
+    for code in codes[:40]:
+        m = cat.lookup(code, bid, line_ids)
+        head = {"exact": "EXACT", "alias": "EXACT (another name)", "hinge": "EXACT (hinge side)",
+                "prefix": "NO EXACT MATCH", "closest": "NO EXACT MATCH", "none": "NOT FOUND"}[m.how]
+        out.append(f'"{code}": {head}' + (f" - {m.note}" if m.note else ""))
+        out.extend(_group_rows(m.items))
+    return "\n".join(out)
 
 
 @tool
-def read_price_sheet(brand: str, tab: str, start_row: int, end_row: int, header_row: Optional[int] = None) -> str:
-    """Read raw cells from a brand's price workbook (max 80 rows per call).
-    Use it to understand the sheet layout (settings, line options, multiplier,
-    header row) or to browse a section of products. Pass header_row to label
-    each cell with its column header."""
+def search_products(query: str, category: Optional[str] = None, business: Optional[str] = None,
+                    line: Optional[str] = None, max_results: int = 8) -> str:
+    """Find products by DESCRIPTION across every business, e.g. 'white farmhouse sink 33', '36 inch range hood',
+    'matte black pull', 'brushed gold faucet', 'quartz slab calacatta'. Optional filters: category (one of:
+    cabinet, filler_panel_molding, cabinet_accessory, hood, hardware, shelf, modification, kitchen_sink,
+    bathroom_sink, sink_accessory, faucet, bathtub, toilet, shower, vanity_top, bath_accessory, flooring,
+    flooring_trim, tile, quartz_slab, part), business (HCC, KCD, PELICAN) and line (color / finish).
+    Products offered in several lines show once - pass business + line to get the item_id. Use real results only."""
     try:
-        return get_workbooks().read_range(brand, tab, start_row, end_row, header_row)
-    except Exception as exc:  # noqa: BLE001
+        cat = get_catalog()
+    except CatalogUnavailable as exc:
         return _json({"error": str(exc)})
+    bid, line_ids, err = _scope(cat, business, line)
+    if err:
+        return err
+    if category and not cat.category_keys(category):
+        return f"Unknown category '{category}'. Categories: {', '.join(CATEGORIES)}"
+    out = []
+    # Anything in the query that looks like a product code (PL-150, W2136, HACT3036) is also looked up
+    # exactly - so a code is never missed because it was asked as a "search".
+    for code in dict.fromkeys(re.findall(r"\b[A-Za-z]{1,8}-?\d[A-Za-z0-9\-/.]*", query)):
+        m = cat.lookup(code, bid, line_ids)
+        if m.how in ("exact", "hinge", "prefix"):
+            out.append(f'Code "{code}": ' + ("EXACT" if m.how != "prefix" else "these codes start with it")
+                       + (f" - {m.note}" if m.note and m.how != "prefix" else ""))
+            out.extend(_group_rows(m.items, limit=15))
+    groups = cat.search(query, category, bid, line_ids, limit=max(1, min(max_results, 15)))
+    if groups:
+        items = [i for g in groups for i in g["items"]]
+        out.append(f"Results for '{query}':")
+        out.extend(_group_rows(items, limit=len(groups)))
+    if not out:
+        return f"No products match '{query}'" + (f" in category {category}" if category else "") + \
+            ". Try other words, or ask the customer for the code."
+    return "\n".join(out)
 
 
 @tool
-def search_price_sheet(brand: str, texts: List[str], tab: Optional[str] = None, header_row: Optional[int] = None,
-                       columns: Optional[List[str]] = None) -> str:
-    """Look up many codes/words in one call, e.g. ['W2136', 'LS36']. Each result says EXACT MATCH,
-    or NO EXACT MATCH with the closest real rows (different items - ask, never substitute).
-    Pass tab + header_row to label cells, and columns (e.g. ['B','C','L'] = code, description,
-    the chosen line's price column) to get short results."""
+def countertop_options(color: Optional[str] = None, material: Optional[str] = None, services: bool = False) -> str:
+    """Countertops (fabricated + installed, priced per square foot by color group).
+    color='Calacatta Oro' -> its price group and $/sq ft. material='quartz' (granite, quartz, dekton, porcelain,
+    eclos) -> its groups, rates and colors. No arguments -> every group with its colors.
+    services=true -> cutouts, edges, tear-out and fees with their codes (pass these codes to create_quote).
+    Square feet = each wall run (ft) x 2 ft deep, islands length x width (use the calculator)."""
     try:
-        return get_workbooks().search(brand, texts, tab, header_row, columns=columns)
-    except Exception as exc:  # noqa: BLE001
+        cat = get_catalog()
+    except CatalogUnavailable as exc:
         return _json({"error": str(exc)})
-
-
-@tool
-def save_sheet_notes(brand: str, notes: str) -> str:
-    """Save a brand workbook's LAYOUT so future chats skip re-reading it: product tab, header
-    row, every customer-facing line name with its price column (e.g. 'Colonial White = L'),
-    multiplier value, assembly %. Layout only - item prices are always looked up fresh."""
-    sheets = {wb["brand"].lower(): wb for wb in get_workbooks().list_workbooks() if "error" not in wb}
-    wb = sheets.get(brand.strip().lower())
-    if not wb:
-        return _json({"saved": False, "reason": f"Unknown brand '{brand}'"})
-    if any(b.lower() == wb["brand"].lower() for b in memory.sheet_guides()):
-        return _json({"saved": False, "reason": f"{wb['brand']} has a verified guide (see SHEET NOTES) - use it."})
-    memory.save_sheet_notes(wb["brand"], notes, wb["last_updated"])
-    return _json({"saved": True})
+    bid = cat.countertop_business()
+    if not bid:
+        return "No countertop price guide in the catalog."
+    out = []
+    if color:
+        found = cat.countertop_color(color)
+        if not found:
+            out.append(f"No countertop color '{color}'. Call countertop_options() for all colors.")
+        groups_per_color: Dict[str, set] = {}
+        for c in found:
+            groups_per_color.setdefault(c["name_key"], set()).add(c["group_id"])
+        for c in found:
+            if len(groups_per_color[c["name_key"]]) > 1:
+                out.append(f"{c['name']}: listed in {len(groups_per_color[c['name_key']])} price groups in the guide (data "
+                           "conflict) - NOT quotable until staff confirm. Don't ask the customer to pick a price: say a "
+                           "designer will confirm it, or offer another color.")
+                groups_per_color[c["name_key"]] = set()  # print once
+                continue
+            if not groups_per_color[c["name_key"]]:
+                continue
+            rate = f"{fmt_money(c['rate'])}/sq ft" if c["rate"] is not None else "NO PRICE - staff must price"
+            out.append(f"{c['name']} -> {c['group_name'] or c['group_id']}: {rate}" + (f" ({c['note']})" if c["note"] else ""))
+    if material or not (color or services):
+        for g in cat.countertop_groups(material):
+            colors = cat.colors_in_group(g["id"])
+            out.append(f"{g['name']}: {fmt_money(g['rate'])}/sq ft" + (f" - {g['note']}" if g["note"] else "")
+                       + (f" - colors: {', '.join(colors)}" if colors else " - (no colors listed)"))
+        if not out:
+            out.append(f"No countertop material '{material}'. Materials: granite, quartz, eclos, dekton, porcelain")
+    if services:
+        out.append("Services (code | name | price | applies to):")
+        for c in cat.charges(bid):
+            price = "staff price" if c["amount"] is None or c["needs_staff"] else \
+                f"{fmt_money(c['amount'])}" + ("" if c["unit"] == "each" else f" per {c['unit']}")
+            out.append(f"  {c['code']} | {c['name']} | {price} | {c['scope']}" + (f" | {c['note']}" if c["note"] else ""))
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -170,23 +286,32 @@ def calculator(expression: str) -> str:
 # Quote
 # ---------------------------------------------------------------------------
 
-class QuoteItem(BaseModel):
-    sku: str = Field(description="SKU as written in the sheet")
-    requested_as: Optional[str] = Field(default=None, description="Customer's code if different")
-    description: str
+class QuoteLine(BaseModel):
+    item_id: int = Field(description="From find_products/search_products")
+    code: str = Field(description="Code shown with that item_id (checked)")
     quantity: int = Field(ge=1)
-    msrp: float = Field(description="Sheet price for the chosen line (before multiplier)")
-    sheet_tab: str
-    sheet_row: int
+    note: Optional[str] = Field(default=None, description="e.g. hinge side")
+
+
+class CountertopService(BaseModel):
+    code: str = Field(description="From countertop_options(services=true)")
+    quantity: float = Field(default=1, description="Count, or linear ft (/LF), or sq ft (/SF)")
+
+
+class Countertop(BaseModel):
+    label: str = Field(default="Countertop", description="e.g. Kitchen, Island")
+    color: str = Field(description="As listed by countertop_options")
+    sqft: float = Field(gt=0)
+    services: List[CountertopService] = Field(default_factory=list)
     note: Optional[str] = None
 
 
 class QuoteExtra(BaseModel):
-    label: str = Field(description="e.g. Countertop (estimate), Handles, Installation")
+    label: str = Field(description="e.g. Installation (estimate)")
     quantity: float
-    unit: str = Field(description="e.g. sq ft, handles, cabinets")
-    rate: float = Field(description="Price per unit (playbook)")
-    detail: str = Field(description="How quantity was worked out")
+    unit: str
+    rate: float = Field(description="Per unit, from the playbook")
+    detail: str = Field(description="How the quantity was worked out")
 
 
 class CreateQuoteInput(BaseModel):
@@ -194,18 +319,15 @@ class CreateQuoteInput(BaseModel):
     customer_phone: str
     customer_email: Optional[str] = None
     customer_address: Optional[str] = None
-    brand: str
-    line: str = Field(description="Customer-facing line, e.g. Colonial White")
-    multiplier: float = Field(description="From the sheet")
-    items: List[QuoteItem]
-    assembled: bool
-    assembly_fee_percent: float = Field(description="From the sheet, e.g. 10")
-    shipping: bool
-    extras: List[QuoteExtra] = Field(default_factory=list)
-    unpriced_items: List[str] = Field(default_factory=list, description="Codes a designer must review")
-    revises: Optional[str] = Field(default=None, description="Quote number this one replaces, when editing a quote")
-    source_upload_id: Optional[str] = Field(default=None, description="Upload id, when the items came from attached files")
-    customer_confirmed_list: bool = Field(default=False, description="True only after the customer said yes to the final list")
+    items: List[QuoteLine] = Field(default_factory=list, description="Products from any business")
+    countertops: List[Countertop] = Field(default_factory=list)
+    assembled: bool = Field(description="Cabinets assembled?")
+    shipping: bool = Field(description="Shipping (true) or pickup (false)")
+    extras: List[QuoteExtra] = Field(default_factory=list, description="Playbook estimates only (installation)")
+    unpriced_items: List[str] = Field(default_factory=list, description="For a designer to price/confirm")
+    revises: Optional[str] = Field(default=None, description="Quote number this one replaces (edits)")
+    source_upload_id: Optional[str] = Field(default=None, description="When items came from attached files")
+    customer_confirmed_list: bool = Field(default=False, description="True after the customer said yes to the list")
     notes: str = ""
 
 
@@ -213,15 +335,12 @@ class CreateQuoteInput(BaseModel):
 def create_quote(
     customer_name: str,
     customer_phone: str,
-    brand: str,
-    line: str,
-    multiplier: float,
-    items: List[Any],
     assembled: bool,
-    assembly_fee_percent: float,
     shipping: bool,
     customer_email: Optional[str] = None,
     customer_address: Optional[str] = None,
+    items: Optional[List[Any]] = None,
+    countertops: Optional[List[Any]] = None,
     extras: Optional[List[Any]] = None,
     unpriced_items: Optional[List[str]] = None,
     revises: Optional[str] = None,
@@ -230,135 +349,86 @@ def create_quote(
     notes: str = "",
     config: RunnableConfig = None,
 ) -> str:
-    """Create the numbered quote (checks SKUs/MSRPs/multiplier against the sheet,
-    totals it, saves it, shows the quote card to the customer)."""
-    if not any(b.lower() == brand.strip().lower() for b in memory.sheet_notes()):
-        return _json({"status": "not_created",
-                      "problems": [f"No sheet notes for {brand} yet. Call save_sheet_notes with the layout you "
-                                   "read (product tab, header row, line -> price column map, multiplier, "
-                                   "assembly %), then call create_quote again."]})
-    as_dict = lambda x: x if isinstance(x, dict) else x.model_dump()  # noqa: E731
-    items = [as_dict(i) for i in items]
-    extras = [as_dict(x) for x in (extras or [])]
-    workbooks = get_workbooks()
+    """Create the numbered quote. Every price comes from the catalog (never from you): one section per
+    business, assembly / quantity prices / countertop rates applied by the business's rules. Shows the
+    quote card + PDF to the customer. Returns problems to fix if anything can't be priced exactly."""
+    from catalog.quote_engine import price_quote
 
-    # Grounding check: every SKU and MSRP must really be on the cited sheet row.
-    problems = []
-    for it in items:
-        try:
-            row = workbooks.row_values(brand, it["sheet_tab"], int(it["sheet_row"]))
-        except Exception as exc:  # noqa: BLE001
-            problems.append(f"{it['sku']}: cannot read {it['sheet_tab']} row {it['sheet_row']} ({exc})")
-            continue
-        texts = {str(v).strip().upper() for v in row if v is not None}
-        numbers = {float(v) for v in row if isinstance(v, (int, float)) and not isinstance(v, bool)}
-        if it["sku"].strip().upper() not in texts:
-            shown = [str(v) for v in row if isinstance(v, str) and v.strip() and not v.startswith("=")][:2]
-            problems.append(f"{it['sku']}: not found on {it['sheet_tab']} row {it['sheet_row']} - that row contains "
-                            f"{shown}; use the SKU exactly as written there (fix it yourself, no need to ask)")
-        if float(it["msrp"]) not in numbers:
-            problems.append(f"{it['sku']}: MSRP {it['msrp']} is not a value on {it['sheet_tab']} row {it['sheet_row']}")
-    sheet_info = next((wb for wb in workbooks.list_workbooks() if wb.get("brand", "").lower() == brand.lower()), {})
     try:
-        if "multiplier" in sheet_info:  # configured cell: must match its LIVE value exactly
-            live = float(sheet_info["multiplier"])
-            if abs(float(multiplier) - live) > 1e-9:
-                problems.append(f"Multiplier must be {live} (live value of {sheet_info['multiplier_cell']}), not {multiplier}")
-            raise StopIteration
-        tabs = sheet_info.get("tabs", [])
-        sheet_numbers = {
-            float(v)
-            for t in tabs
-            for r in range(1, min(t["rows"], 30) + 1)
-            for v in workbooks.row_values(brand, t["name"], r)
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
-        }
-        if float(multiplier) not in sheet_numbers:
-            problems.append(f"Multiplier {multiplier} was not found in the top of the {brand} sheet")
-    except StopIteration:
-        pass
-    except Exception as exc:  # noqa: BLE001
-        problems.append(f"Could not verify multiplier: {exc}")
-    thread_id_ = _configurable(config).get("thread_id")
-    upload = (memory.get_thread(thread_id_) or {}).get("active_upload") if thread_id_ else None
+        cat = get_catalog()
+    except CatalogUnavailable as exc:
+        return _json({"status": "not_created", "problems": [str(exc)]})
+    as_dict = lambda x: x if isinstance(x, dict) else x.model_dump()  # noqa: E731
+    items_ = [as_dict(i) for i in items or []]
+    counters = [{**as_dict(c), "services": [as_dict(s) for s in as_dict(c).get("services") or []]} for c in countertops or []]
+    extras_ = [as_dict(x) for x in extras or []]
+    priced, problems, _warnings = price_quote(cat, items_, counters, assembled, shipping, extras_)
+
+    thread_id = _configurable(config).get("thread_id")
+    upload = (memory.get_thread(thread_id) or {}).get("active_upload") if thread_id else None
     if upload and not upload.get("quoted"):
         # Quote built from uploaded files: every line must be accounted for, and the customer must confirm.
         lines = upload.get("lines", [])
-        covered = len(items) + len(unpriced_items or [])
+        covered = len(items_) + len(counters) + len(unpriced_items or [])
         if covered < len(lines):
             problems.append(
                 f"The customer's files have {len(lines)} lines but this quote accounts for only {covered} "
-                f"({len(items)} priced + {len(unpriced_items or [])} unpriced). Every line must be either a priced item "
-                "or listed in unpriced_items (e.g. 'B15 trash pull-out - not in HCC, designer to confirm'). "
+                f"({len(items_)} items + {len(counters)} countertops + {len(unpriced_items or [])} unpriced). Every line "
+                "must be a quoted item or listed in unpriced_items (e.g. 'B15 trash pull-out - designer to confirm'). "
                 "Lines from the files: " + "; ".join(lines))
         if not customer_confirmed_list:
             problems.append("These items came from the customer's files: show the final list (qty x code, plus anything "
                             "unpriced) with ask_customer and get a yes first, then call create_quote with "
                             "customer_confirmed_list=true.")
+    if memory.customer_key(customer_phone) is None:
+        problems.append("A valid customer phone number is required.")
     if problems:
         return _json({"status": "not_created", "problems": problems,
-                      "fix": "Re-read the sheet rows and correct the SKU/MSRP/row/multiplier, then call create_quote again."})
+                      "fix": "Correct these (look items up again if needed), then call create_quote again."})
 
     settings = load_settings()
     company = settings.get("company", {})
-    lines = []
-    for it in items:
-        unit = _money(float(it["msrp"]) * float(multiplier))
-        lines.append({
-            "sku": it["sku"], "requested_as": it.get("requested_as"), "description": it["description"],
-            "quantity": int(it["quantity"]), "unit_price": unit, "total": _money(unit * int(it["quantity"])),
-            "msrp": float(it["msrp"]), "note": it.get("note"),
-        })
-    subtotal = _money(sum(line["total"] for line in lines))
-    assembly_fee = _money(subtotal * float(assembly_fee_percent) / 100) if assembled else 0.0
-    extra_rows = [{**x, "amount": _money(float(x["quantity"]) * float(x["rate"]))} for x in extras]
-    extras_total = _money(sum(x["amount"] for x in extra_rows))
-    grand_total = _money(subtotal + assembly_fee + extras_total)
-
     cust_key = memory.upsert_customer(customer_phone, name=customer_name, email=customer_email, address=customer_address)
-    if not cust_key:
-        return _json({"status": "not_created", "problems": ["A valid customer phone number is required."]})
-
     today = date.today()
     quote = {
-        "quote_number": memory.next_quote_number(company.get("quote_number_prefix", "HQ-")),
+        "quote_number": "",
+        "format": 2,
         "created_at": memory.now(),
         "date": today.isoformat(),
         "valid_until": (today + timedelta(days=int(company.get("quote_valid_days", 30)))).isoformat(),
         "company": {k: company.get(k, "") for k in ("name", "phone", "email", "address")},
         "customer": {"name": customer_name, "phone": customer_phone,
                      "email": customer_email or "", "address": customer_address or ""},
-        "brand": brand,
-        "brand_display": settings.get("price_sheets", {}).get(brand, {}).get("display_name", brand),
-        "line": line,
-        "multiplier": float(multiplier),
-        "items": lines,
+        **priced,
         "unpriced_items": unpriced_items or [],
         "assembled": assembled,
-        "assembly_fee_percent": float(assembly_fee_percent),
         "shipping": shipping,
-        "extras": extra_rows,
-        "totals": {"subtotal": subtotal, "assembly_fee": assembly_fee,
-                   "extras_total": extras_total, "grand_total": grand_total},
         "notes": notes,
         "revises": revises,
         "footer": company.get("quote_footer", ""),
-        "thread_id": _configurable(config).get("thread_id"),
+        "thread_id": thread_id,
+        "catalog_built": cat.meta.get("built_at"),
     }
-    memory.save_quote(cust_key, quote)
-    if upload and not upload.get("quoted") and thread_id_:
-        memory.update_thread(thread_id_, active_upload={**upload, "quoted": True})
-    if quote["thread_id"]:
-        memory.update_thread(quote["thread_id"], customer=cust_key, status=f"Quote {quote['quote_number']}")
+    with memory.quote_lock:  # number + save together: parallel users never get the same number
+        quote["quote_number"] = memory.next_quote_number(company.get("quote_number_prefix", "HQ-"))
+        memory.save_quote(cust_key, quote)
+    if upload and not upload.get("quoted") and thread_id:
+        memory.update_thread(thread_id, active_upload={**upload, "quoted": True})
+    if thread_id:
+        memory.update_thread(thread_id, customer=cust_key, status=f"Quote {quote['quote_number']}")
 
     return _json({
         "status": "created",
         "quote_number": quote["quote_number"],
         **({"revises": revises} if revises else {}),
-        "items": [{"sku": l["sku"], "qty": l["quantity"], "unit_price": l["unit_price"], "total": l["total"]} for l in lines],
-        "subtotal": subtotal, "assembly_fee": assembly_fee,
-        "extras": [{"label": x["label"], "amount": x["amount"]} for x in extra_rows],
-        "grand_total": grand_total, "valid_until": quote["valid_until"],
+        "sections": [{"business": s["business"], "lines": s["lines"],
+                      "items": [{"code": i["code"], "qty": i["quantity"], "unit_price": i["unit_price"], "total": i["total"]}
+                                for i in s["items"]],
+                      "assembly_fee": s["assembly_fee"], "total": s["total"]} for s in priced["sections"]],
+        **({"countertops": [{"label": p["label"], "color": p["color"], "sqft": p["sqft"], "total": p["total"]}
+                            for p in priced["countertops"]["pieces"]]} if priced["countertops"] else {}),
+        "extras": [{"label": x["label"], "amount": x["amount"]} for x in priced["extras"]],
+        "grand_total": priced["totals"]["grand_total"], "valid_until": quote["valid_until"],
         "shown_to_customer": "The quote card with a PDF download is displayed below your reply - don't repeat the table.",
     })
 
@@ -370,7 +440,7 @@ def get_saved_quote(quote_number: str, phone: str) -> str:
     quote = memory.get_quote(quote_number)
     if not quote or memory.customer_key(quote["customer"]["phone"]) != memory.customer_key(phone):
         return _json({"found": False})
-    return _json({"found": True, **{k: v for k, v in quote.items() if k not in ("footer", "company")}})
+    return "found:\n" + quote_brief(quote, full=True)
 
 
 # ---------------------------------------------------------------------------
@@ -390,9 +460,7 @@ def find_customer(phone: Optional[str] = None, name: Optional[str] = None, confi
         thread_id = _configurable(config).get("thread_id")
         if thread_id:
             memory.update_thread(thread_id, customer=key)
-        past = [{"quote_number": q["quote_number"], "date": q["date"], "line": q["line"],
-                 "items": [f"{i['quantity']} x {i['sku']}" for i in q["items"]],
-                 "grand_total": q["totals"]["grand_total"]} for q in memory.quotes_for_customer(key)]
+        past = [quote_brief(q) for q in memory.quotes_for_customer(key)]
         return _json({"found": True, "profile": profile, "past_quotes": past})
     if name:
         if not _is_staff(config):
@@ -441,10 +509,11 @@ def learn_rule(rule: str, config: RunnableConfig = None) -> str:
 def ask_customer(question: str, options: List[str], allow_multiple: bool = False) -> str:
     """Pause and ask the customer to choose when their info is wrong, missing or
     ambiguous (unknown code, color we don't carry, unclear quantity, assembled or
-    not, ...). Give 2-6 short, concrete options taken from the sheet/playbook; the
-    customer clicks one (or several if allow_multiple) or types their own answer.
-    Call it ALONE (not together with other tools). Returns the customer's answer."""
-    answer = interrupt({"question": question, "options": options[:6], "allow_multiple": allow_multiple})
+    not, which business/line/color ...). Give 2-8 short, concrete options taken from the
+    catalog/playbook (all of them when a product has up to 8 colors); the customer clicks one (or
+    several if allow_multiple) or types their own answer. Call it ALONE (not together with other
+    tools). Returns the answer."""
+    answer = interrupt({"question": question, "options": options[:8], "allow_multiple": allow_multiple})
     return _json({"customer_answer": answer})
 
 
@@ -452,7 +521,7 @@ def ask_customer(question: str, options: List[str], allow_multiple: bool = False
 def hand_off_to_designer(reason: str, summary: str, urgency: str = "normal", config: RunnableConfig = None) -> str:
     """Flag this chat for a human designer when you can't resolve it well: the customer
     asks for a person, stays frustrated after you tried, needs something outside the
-    price sheets (custom sizes, design advice, a brand not loaded), or reports a
+    catalog (custom sizes, design advice, a brand not loaded), or reports a
     problem with an order. `summary` = what they need + what's done so far.
     urgency: 'normal' or 'urgent'. Then tell the customer a designer will follow up."""
     thread_id = _configurable(config).get("thread_id")
@@ -480,12 +549,12 @@ def read_uploaded_files(upload_id: str, config: RunnableConfig = None) -> str:
         lines = jobs.extracted_lines(thread_id, upload_id)
         memory.update_thread(thread_id, active_upload={"id": upload_id, "lines": lines, "quoted": False})
         return text + (
-            "\n\nNEXT (keep it to a few steps): 1) convert designer codes per the playbook (BER36-L->LS36, drop a "
-            "trailing L/R hinge suffix - no question needed); 2) ONE search_price_sheet with ALL codes, using the "
-            "guide's tab, header_row and columns=[code col, description col, the line's price col]; 3) for each code "
-            "with NO EXACT MATCH or UNSURE, ask_customer with the real alternatives; 4) ONE ask_customer showing the "
-            "final list (qty x code) for a yes; 5) create_quote with source_upload_id=" + upload_id +
-            " and customer_confirmed_list=true. Use the multiplier from PRICE SHEETS LOADED.")
+            "\n\nNEXT (keep it to a few steps): 1) convert designer codes per the playbook (BER36-L->LS36; a trailing "
+            "L/R hinge side is found automatically - no question needed); 2) pick the business + line from the color on "
+            "the document (playbook), then ONE find_products call with ALL codes for that business + line; "
+            "3) for each code with NO EXACT MATCH or UNSURE, ask_customer with the real alternatives; 4) ONE "
+            "ask_customer showing the final list (qty x code) for a yes; 5) create_quote with the item_ids, "
+            "source_upload_id=" + upload_id + " and customer_confirmed_list=true.")
     if st.get("state") == "error":
         return _json({"state": "error", "detail": st.get("error"),
                       "next": "Apologise, and ask the customer to type the list or try a clearer photo/PDF."})
@@ -495,17 +564,15 @@ def read_uploaded_files(upload_id: str, config: RunnableConfig = None) -> str:
 
 
 CUSTOMER_TOOLS = [
-    sheet_overview, search_price_sheet, save_sheet_notes, calculator,
+    find_products, search_products, countertop_options, calculator,
     ask_customer, create_quote, get_saved_quote, find_customer, hand_off_to_designer, read_uploaded_files,
 ]
 STAFF_TOOLS = CUSTOMER_TOOLS + [learn_rule]
 
 TOOL_LABELS = {
-    "list_price_sheets": "Checking price lists",
-    "sheet_overview": "Learning the price sheet layout",
-    "read_price_sheet": "Reading the price sheet",
-    "search_price_sheet": "Looking up items in the price sheet",
-    "save_sheet_notes": "Learning the price sheet layout",
+    "find_products": "Looking up your items",
+    "search_products": "Searching the catalog",
+    "countertop_options": "Checking countertop colors and prices",
     "calculator": "Calculating",
     "ask_customer": "Asking you to choose",
     "create_quote": "Creating the quote",
