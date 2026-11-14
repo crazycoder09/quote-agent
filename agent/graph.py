@@ -271,9 +271,7 @@ RULES
   bridge over the fridge", "18 inch drawer base") -> find_by_size (inches: width, then height, then depth; "30 wide
   36 tall" = width 30 height 36) - never guess a code from a size. Other descriptions ("white farmhouse sink",
   "black pulls") -> search_products. Countertops -> countertop_options. Never repeat the same lookup.
-- Choosing or comparing colors / door styles, or "what does it look like?" -> show_line_images (sample door +
-  finished kitchen photo, shown in the chat) for the candidate lines.
-- Never guess codes, item_ids or prices, and never calculate prices or totals: create_quote prices everything from
+{images_rule}- Never guess codes, item_ids or prices, and never calculate prices or totals: create_quote prices everything from
   the catalog with each business's rules (assembly, quantity prices, countertop rates). The calculator is only for
   quantities (sq ft, handles).
 - create_quote needs: name + phone; items as item_id + code + quantity from lookups in this conversation; assembled
@@ -324,6 +322,13 @@ STAFF_NOTE = ("- You are talking with STAFF (verified by PIN). When they ask abo
 UPLOAD_RULE = ("- Message says files are attached -> read_uploaded_files(upload_id) and follow the playbook's "
                "section on uploads.\n")
 UPLOAD_TOOLS = {"read_uploaded_files"}
+IMAGES_RULE = ("- Choosing or comparing colors / door styles, or \"what does it look like?\" -> show_line_images "
+               "(sample door + finished kitchen photo, shown in the chat) for the candidate lines.\n")
+
+
+def images_enabled() -> bool:
+    """Door-style photos in the chat - off unless settings.json features.line_images is true."""
+    return bool(load_settings().get("features", {}).get("line_images", False))
 
 
 def chat_has_upload(state: QuoteState, config: RunnableConfig) -> bool:
@@ -338,7 +343,9 @@ def chat_has_upload(state: QuoteState, config: RunnableConfig) -> bool:
 def agent_tools(state: QuoteState, config: RunnableConfig) -> List[Any]:
     """The tools offered to the agent this step: everything, minus tools that can't help in this chat."""
     tools = STAFF_TOOLS if _role(config) == "staff" else CUSTOMER_TOOLS
-    skip = set() if chat_has_upload(state, config) else UPLOAD_TOOLS
+    skip = set() if chat_has_upload(state, config) else set(UPLOAD_TOOLS)
+    if not images_enabled():
+        skip.add("show_line_images")
     return [t for t in tools if t.name not in skip]
 
 
@@ -369,6 +376,7 @@ def build_system_prompt(state: QuoteState, config: RunnableConfig) -> str:
         mood=u.get("mood", "neutral"),
         staff_rules=STAFF_NOTE if role == "staff" else "",
         upload_rule=UPLOAD_RULE if upload else "",
+        images_rule=IMAGES_RULE if images_enabled() else "",
         playbook=compose_playbook(upload),
         learned="\n".join(f"- {r['rule']}" for r in memory.learned_rules()) or "(none yet)",
         memory_context=state.get("memory_context", ""),

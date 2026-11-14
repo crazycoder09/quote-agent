@@ -75,5 +75,9 @@
     "redis_url": "redis://127.0.0.1:6379/0",
     "task_time_limit_seconds": 300,
     "_help": "Per message: max_images images + max_pdfs PDFs, each up to max_file_mb; PDFs up to max_pdf_pages pages. Files are read by background Celery workers (redis_url); if no worker is running the app reads them in a background thread instead. render_dpi / max_image_side_px control how sharp PDF pages are for the vision model."
+  },
+  "features": {
+    "line_images": false,
+    "_help": "line_images: show sample-door + finished-kitchen photos in the chat (tool show_line_images, photos in assets/catalog_images). Set true to turn it back on - no code change needed."
   }
 }
