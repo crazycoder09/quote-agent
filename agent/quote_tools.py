@@ -10,6 +10,9 @@ Catalog (all businesses: HCC, KCD, Pelican, countertops)
     find_products          product codes -> items (item_id + price once business and line are known)
     search_products        descriptions ("white farmhouse sink", "36 inch hood") -> items
     countertop_options     countertop colors -> price group, rates, cutouts / edges / services
+    find_by_size           "30-inch wide wall cabinet" -> real cabinets of that type and size (both brands)
+    flooring_quantity      area (+10% waste unless included) -> boxes / sheets to order
+    show_line_images       sample door + finished kitchen photos of door styles (shown in the chat)
 Math
     calculator             exact arithmetic (quantities: sq ft, handles)
 Clarify (human-in-the-loop)
@@ -21,6 +24,9 @@ Long-term memory
     find_customer          returning customer: details, preferences, past quotes
     save_customer_details  remember contact details / preferences right away
     learn_rule             (staff only) teach a new business rule
+Staff reports (staff only - cost and margin are never shown to customers)
+    sales_report           quotes, sales, cost, margin, tax by period / business
+    set_quote_status       mark a quote won (sold) / lost / quoted
 Escalation
     hand_off_to_designer   flag the chat "Needs you" for a human designer
 Uploads
@@ -45,6 +51,7 @@ from agent import memory
 from agent.agents import load_settings
 from agent.quote_document import quote_brief
 from catalog.categories import CATEGORIES
+from catalog.pricing import unconfirmed, waste_percent
 from catalog.store import CatalogUnavailable, fmt_money, get_catalog
 
 
@@ -79,11 +86,15 @@ def _flags(item: Dict[str, Any]) -> str:
     return (" | " + " | ".join(out)) if out else ""
 
 
+_STAFF_VIEW = {"on": False}  # set per tool call: staff also see the wholesale cost
+
+
 def _item_row(item: Dict[str, Any]) -> str:
     price = fmt_money(item["unit_price"]) if item["unit_price"] is not None else "no price"
     line = f" | {item['line_name']}" if item["line_name"] else ""
+    cost = f" (staff: cost {fmt_money(item['unit_cost'])})" if _STAFF_VIEW["on"] and item.get("unit_cost") else ""
     return (f"item_id={item['id']} | {item['business_id']}{line} | {item['code']} | {item['description']} | "
-            f"{price} each{_flags(item)}")
+            f"{price} each{cost}{_flags(item)}")
 
 
 def _short_desc(item: Dict[str, Any]) -> str:
@@ -136,7 +147,8 @@ def _scope(cat, business: Optional[str], line: Optional[str]) -> tuple:
 
 
 @tool
-def find_products(codes: List[str], business: Optional[str] = None, line: Optional[str] = None) -> str:
+def find_products(codes: List[str], business: Optional[str] = None, line: Optional[str] = None,
+                  config: RunnableConfig = None) -> str:
     """Look up product CODES in the catalog of every business, e.g. ['W2136', 'B15', 'PL-150', 'HACT3036'].
     Pass business (HCC, KCD, PELICAN) and line (the customer's color / door style / finish, e.g.
     'Colonial White', 'Brooklyn Fawn') when known: each code then returns ONE item with its item_id and
@@ -147,6 +159,7 @@ def find_products(codes: List[str], business: Optional[str] = None, line: Option
         cat = get_catalog()
     except CatalogUnavailable as exc:
         return _json({"error": str(exc)})
+    _STAFF_VIEW["on"] = _is_staff(config)
     bid, line_ids, err = _scope(cat, business, line)
     if err:
         return err
@@ -162,7 +175,7 @@ def find_products(codes: List[str], business: Optional[str] = None, line: Option
 
 @tool
 def search_products(query: str, category: Optional[str] = None, business: Optional[str] = None,
-                    line: Optional[str] = None, max_results: int = 8) -> str:
+                    line: Optional[str] = None, max_results: int = 8, config: RunnableConfig = None) -> str:
     """Find products by DESCRIPTION across every business, e.g. 'white farmhouse sink 33', '36 inch range hood',
     'matte black pull', 'brushed gold faucet', 'quartz slab calacatta'. Optional filters: category (one of:
     cabinet, filler_panel_molding, cabinet_accessory, hood, hardware, shelf, modification, kitchen_sink,
@@ -173,6 +186,7 @@ def search_products(query: str, category: Optional[str] = None, business: Option
         cat = get_catalog()
     except CatalogUnavailable as exc:
         return _json({"error": str(exc)})
+    _STAFF_VIEW["on"] = _is_staff(config)
     bid, line_ids, err = _scope(cat, business, line)
     if err:
         return err
@@ -245,6 +259,103 @@ def countertop_options(color: Optional[str] = None, material: Optional[str] = No
                 f"{fmt_money(c['amount'])}" + ("" if c["unit"] == "each" else f" per {c['unit']}")
             out.append(f"  {c['code']} | {c['name']} | {price} | {c['scope']}" + (f" | {c['note']}" if c["note"] else ""))
     return "\n".join(out)
+
+
+@tool
+def find_by_size(cabinet_type: str, width: float, height: Optional[float] = None, depth: Optional[float] = None,
+                 business: Optional[str] = None, line: Optional[str] = None, config: RunnableConfig = None) -> str:
+    """Find cabinets by TYPE and SIZE when the customer describes them instead of giving a code
+    ("30-inch wide wall cabinet", "36 x 15 bridge over the fridge", "18 inch drawer base").
+    cabinet_type: wall, bridge (short wall cabinet above a fridge/range/window, <= 24" tall; over a fridge
+    usually 24" deep), base, sink_base, drawer_base, corner, tall, pantry, oven, vanity, any.
+    Sizes in inches: width (required), height and depth when given. Pass business + line (the color) to get
+    item_ids. Returns exact sizes, or the nearest real sizes (ask - never substitute silently)."""
+    try:
+        cat = get_catalog()
+    except CatalogUnavailable as exc:
+        return _json({"error": str(exc)})
+    _STAFF_VIEW["on"] = _is_staff(config)
+    kind = cabinet_type.strip().lower().replace(" ", "_").replace("-", "_")
+    kind = {"upper": "wall", "lower": "base", "sink": "sink_base", "drawer": "drawer_base", "drawers": "drawer_base",
+            "lazy_susan": "corner", "blind_corner": "corner", "utility": "tall", "refrigerator": "bridge",
+            "over_fridge": "bridge", "fridge": "bridge"}.get(kind, kind)
+    if kind not in cat.SIZE_KINDS:
+        return f"Unknown cabinet_type '{cabinet_type}'. Use one of: {', '.join(cat.SIZE_KINDS)}"
+    bid, line_ids, err = _scope(cat, business, line)
+    if err:
+        return err
+    exact, near = cat.find_by_size(kind, float(width), height, depth, bid, line_ids)
+    size = f'{width:g}"W' + (f' x {height:g}"H' if height else "") + (f' x {depth:g}"D' if depth else "")
+    if exact:
+        return f"{kind} {size}: EXACT SIZE\n" + "\n".join(_group_rows(exact, limit=12))
+    if near:
+        return (f"{kind} {size}: NO EXACT SIZE. Nearest REAL sizes (different items - ask the customer, never "
+                "substitute):\n" + "\n".join(_group_rows(near, limit=12)))
+    return f"No {kind} cabinet near {size}" + (f" in {bid}" if bid else "") + ". Ask for the code or other sizes."
+
+
+@tool
+def flooring_quantity(item_id: int, area_sqft: float, area_includes_waste: bool) -> str:
+    """How many boxes (flooring) or sheets (tile / mosaic) to order for an area. Before calling, ASK the
+    customer whether their square footage already includes waste; if not, pass area_includes_waste=false
+    and the recommended waste (10%) is added. Returns the quantity to put in create_quote."""
+    import math
+
+    try:
+        cat = get_catalog()
+    except CatalogUnavailable as exc:
+        return _json({"error": str(exc)})
+    item = cat.get_item(int(item_id))
+    if item is None:
+        return _json({"error": f"item_id {item_id} does not exist"})
+    per = item["extra"].get("sqft_per_unit")
+    if not per:
+        return _json({"error": f"{item['sku']} has no coverage per {item['unit']} - ask how many to order"})
+    waste = waste_percent()
+    area = float(area_sqft) * (1 if area_includes_waste else 1 + float(waste) / 100)
+    qty = math.ceil(round(area / float(per), 6))
+    unit = "boxes" if item["unit"] == "box" else "sheets" if item["category"] == "tile" else "units"
+    return _json({"item_id": item["id"], "code": item["code"], "quantity": qty, "unit": unit,
+                  "coverage_per_unit_sqft": per, "area_ordered_for_sqft": round(area, 2),
+                  "covers_sqft": round(qty * float(per), 2),
+                  "waste": "included by the customer" if area_includes_waste else f"+{waste:g}% added (recommended)",
+                  "next": f"Use quantity={qty} for item_id {item['id']} in create_quote. Tell the customer the area, "
+                          "the waste allowance and how many " + unit + " that is."})
+
+
+def _image_root():
+    from pathlib import Path
+
+    return Path(__file__).resolve().parent.parent / "assets" / "catalog_images"
+
+
+@tool
+def show_line_images(lines: List[str], business: Optional[str] = None) -> str:
+    """Show the customer the SAMPLE DOOR and a FINISHED KITCHEN photo of door styles / colors, e.g.
+    lines=['Colonial White', 'Colonial Navy']. Use it when they are choosing or comparing colors, ask what a
+    color looks like, or before they commit to a line. The photos appear in the chat under your reply."""
+    try:
+        cat = get_catalog()
+    except CatalogUnavailable as exc:
+        return _json({"error": str(exc)})
+    bid = cat.resolve_business(business) if business else None
+    shown, missing = [], []
+    for name in lines[:6]:
+        found = cat.resolve_line(name, bid)
+        if not found:
+            missing.append(f"{name} (not a line in the catalog)")
+            continue
+        line = found[0]
+        folder = _image_root() / line["business"] / line["id"]
+        door, kitchen = folder / "door.jpg", folder / "kitchen.jpg"
+        if not door.exists() and not kitchen.exists():
+            missing.append(f"{line['name']} (no photos yet)")
+            continue
+        shown.append({"business": line["business"], "line": line["name"],
+                      "door": str(door.relative_to(_image_root().parent.parent)) if door.exists() else None,
+                      "kitchen": str(kitchen.relative_to(_image_root().parent.parent)) if kitchen.exists() else None})
+    return _json({"images": shown, "missing": missing,
+                  "note": "The photos are displayed to the customer under your reply - don't describe the image files."})
 
 
 # ---------------------------------------------------------------------------
@@ -322,8 +433,10 @@ class CreateQuoteInput(BaseModel):
     items: List[QuoteLine] = Field(default_factory=list, description="Products from any business")
     countertops: List[Countertop] = Field(default_factory=list)
     assembled: bool = Field(description="Cabinets assembled?")
-    shipping: bool = Field(description="Shipping (true) or pickup (false)")
-    extras: List[QuoteExtra] = Field(default_factory=list, description="Playbook estimates only (installation)")
+    shipping: bool = Field(description="Delivery/shipping (true) or pickup (false) - delivery needs the address")
+    installation: bool = Field(default=False, description="We install (priced from the install sheet, with time "
+                                                           "estimate; installed items are not taxed) - needs the address")
+    extras: List[QuoteExtra] = Field(default_factory=list, description="Other playbook estimates only (not installation)")
     unpriced_items: List[str] = Field(default_factory=list, description="For a designer to price/confirm")
     revises: Optional[str] = Field(default=None, description="Quote number this one replaces (edits)")
     source_upload_id: Optional[str] = Field(default=None, description="When items came from attached files")
@@ -339,6 +452,7 @@ def create_quote(
     shipping: bool,
     customer_email: Optional[str] = None,
     customer_address: Optional[str] = None,
+    installation: bool = False,
     items: Optional[List[Any]] = None,
     countertops: Optional[List[Any]] = None,
     extras: Optional[List[Any]] = None,
@@ -350,8 +464,9 @@ def create_quote(
     config: RunnableConfig = None,
 ) -> str:
     """Create the numbered quote. Every price comes from the catalog (never from you): one section per
-    business, assembly / quantity prices / countertop rates applied by the business's rules. Shows the
-    quote card + PDF to the customer. Returns problems to fix if anything can't be priced exactly."""
+    business; assembly, quantity prices, countertop rates, installation (price + time), and sales tax are
+    applied by the owner's rules. Shows the quote card + PDF to the customer. Returns problems to fix if
+    anything can't be priced exactly."""
     from catalog.quote_engine import price_quote
 
     try:
@@ -362,7 +477,10 @@ def create_quote(
     items_ = [as_dict(i) for i in items or []]
     counters = [{**as_dict(c), "services": [as_dict(s) for s in as_dict(c).get("services") or []]} for c in countertops or []]
     extras_ = [as_dict(x) for x in extras or []]
-    priced, problems, _warnings = price_quote(cat, items_, counters, assembled, shipping, extras_)
+    priced, problems, warnings = price_quote(cat, items_, counters, assembled, shipping, extras_, installation)
+    if (installation or shipping) and not (customer_address or "").strip():
+        problems.append("Installation and delivery need the customer's address - ask for it (street, city, ZIP), "
+                        "then call create_quote again with customer_address.")
 
     thread_id = _configurable(config).get("thread_id")
     upload = (memory.get_thread(thread_id) or {}).get("active_upload") if thread_id else None
@@ -403,6 +521,8 @@ def create_quote(
         "unpriced_items": unpriced_items or [],
         "assembled": assembled,
         "shipping": shipping,
+        "installation_requested": installation,
+        "status": "quoted",
         "notes": notes,
         "revises": revises,
         "footer": company.get("quote_footer", ""),
@@ -427,9 +547,17 @@ def create_quote(
                       "assembly_fee": s["assembly_fee"], "total": s["total"]} for s in priced["sections"]],
         **({"countertops": [{"label": p["label"], "color": p["color"], "sqft": p["sqft"], "total": p["total"]}
                             for p in priced["countertops"]["pieces"]]} if priced["countertops"] else {}),
+        **({"installation": {"total": priced["installation"]["total"], "estimated_hours": priced["installation"]["hours"],
+                             "estimated_days": priced["installation"]["days"]}} if priced.get("installation") else {}),
         "extras": [{"label": x["label"], "amount": x["amount"]} for x in priced["extras"]],
+        "sales_tax": priced["totals"]["tax"], "tax_rate_percent": priced["totals"]["tax_rate_percent"],
         "grand_total": priced["totals"]["grand_total"], "valid_until": quote["valid_until"],
-        "shown_to_customer": "The quote card with a PDF download is displayed below your reply - don't repeat the table.",
+        **({"staff_only": {"wholesale_cost": priced["totals"]["cost"], "margin": priced["totals"]["margin"],
+                           "margin_percent": priced["totals"]["margin_percent"],
+                           "placeholders_in_use": unconfirmed()}} if _is_staff(config) else {}),
+        **({"warnings": warnings} if warnings else {}),
+        "shown_to_customer": "The quote card with a PDF download is displayed below your reply - don't repeat the "
+                             "table. Mention sales tax / installation time if they apply.",
     })
 
 
@@ -502,6 +630,110 @@ def learn_rule(rule: str, config: RunnableConfig = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Staff reports: margin tracking + sales (never offered to customers)
+# ---------------------------------------------------------------------------
+
+def _latest_quotes(quotes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One quote per job. Revisions form a chain (HQ-1002 revises HQ-1001): the version marked won counts
+    (that's what was sold); otherwise the latest version counts."""
+    by_number = {q["quote_number"]: q for q in quotes}
+
+    def root(q):
+        seen = set()
+        while q.get("revises") in by_number and q["quote_number"] not in seen:
+            seen.add(q["quote_number"])
+            q = by_number[q["revises"]]
+        return q["quote_number"]
+
+    chains: Dict[str, List[Dict[str, Any]]] = {}
+    for q in quotes:
+        chains.setdefault(root(q), []).append(q)
+    out = []
+    for chain in chains.values():
+        won = [q for q in chain if q.get("status") == "won"]
+        pick = won or chain
+        out.append(max(pick, key=lambda q: (q.get("created_at", ""), q["quote_number"])))
+    return out
+
+
+@tool
+def sales_report(start_date: Optional[str] = None, end_date: Optional[str] = None, status: str = "all",
+                 config: RunnableConfig = None) -> str:
+    """STAFF ONLY: sales and profit-margin report from the saved quotes. Dates YYYY-MM-DD (default: last 30
+    days, inclusive). status: all | quoted | won | lost. Shows quote count and value, won (sold) value,
+    wholesale cost, margin $ and %, sales tax, installation, per business, and the biggest quotes."""
+    if not _is_staff(config):
+        return _json({"error": "Reports are for staff only."})
+    from collections import defaultdict
+    from datetime import date as _date
+
+    end = _date.fromisoformat(end_date) if end_date else _date.today()
+    start = _date.fromisoformat(start_date) if start_date else end - timedelta(days=30)
+    quotes = [q for q in _latest_quotes(memory.all_quotes())
+              if start.isoformat() <= str(q.get("date", "")) <= end.isoformat()]
+    tracked = [q for q in quotes if "cost" in q.get("totals", {})]
+    if status != "all":
+        tracked = [q for q in tracked if q.get("status", "quoted") == status]
+    if not tracked:
+        return _json({"period": f"{start} to {end}", "quotes": 0,
+                      "note": "No quotes with cost tracking in this period" + (f" (status {status})" if status != "all" else "")})
+    money2 = lambda v: round(float(v), 2)  # noqa: E731
+
+    def summarize(qs):
+        t = lambda k: sum(q["totals"].get(k, 0) for q in qs)  # noqa: E731
+        products = t("items_subtotal") + t("assembly_fee") + t("countertops")
+        return {"quotes": len(qs), "quoted_value": money2(t("grand_total")), "products_value": money2(products),
+                "wholesale_cost": money2(t("cost")), "margin": money2(t("margin")),
+                "margin_percent": round(t("margin") / products * 100, 1) if products else 0.0,
+                "sales_tax": money2(t("tax")), "installation": money2(t("installation"))}
+
+    by_business = defaultdict(lambda: {"value": 0.0, "cost": 0.0})
+    for q in tracked:
+        for sec in q.get("sections", []):
+            by_business[sec["business"]]["value"] += sec["total"]
+            by_business[sec["business"]]["cost"] += sec.get("cost", 0)
+        if q.get("countertops"):
+            by_business[q["countertops"]["business"]]["value"] += q["countertops"]["total"]
+            by_business[q["countertops"]["business"]]["cost"] += q["countertops"].get("cost", 0)
+    won = [q for q in tracked if q.get("status") == "won"]
+    report = {
+        "period": f"{start} to {end}", "status_filter": status,
+        "all_quotes": summarize(tracked),
+        "won_sales": summarize(won) if won else {"quotes": 0},
+        "conversion_rate_percent": round(len(won) / len(tracked) * 100, 1),
+        "by_business": {b: {"value": money2(v["value"]), "cost": money2(v["cost"]), "margin": money2(v["value"] - v["cost"]),
+                            "margin_percent": round((v["value"] - v["cost"]) / v["value"] * 100, 1) if v["value"] else 0.0}
+                        for b, v in sorted(by_business.items())},
+        "biggest_quotes": [{"quote": q["quote_number"], "customer": q["customer"]["name"], "date": q["date"],
+                            "status": q.get("status", "quoted"), "total": q["totals"]["grand_total"],
+                            "margin_percent": q["totals"]["margin_percent"]}
+                           for q in sorted(tracked, key=lambda q: -q["totals"]["grand_total"])[:5]],
+        "placeholders_in_use": unconfirmed(),
+        "not_tracked": len(quotes) - len([q for q in quotes if "cost" in q.get("totals", {})]),
+    }
+    return _json(report)
+
+
+@tool
+def set_quote_status(quote_number: str, status: str, note: str = "", config: RunnableConfig = None) -> str:
+    """STAFF ONLY: record what happened to a quote - status won (sold / ordered), lost, or quoted. Sales
+    reports count won quotes as sales."""
+    if not _is_staff(config):
+        return _json({"error": "Only staff can change a quote's status."})
+    status = status.strip().lower()
+    status = {"sold": "won", "ordered": "won", "order": "won", "open": "quoted"}.get(status, status)
+    if status not in ("quoted", "won", "lost"):
+        return _json({"error": "status must be won, lost or quoted"})
+    q = memory.set_quote_status(quote_number, status, note)
+    if not q:
+        return _json({"error": f"Quote {quote_number} not found"})
+    newer = [x["quote_number"] for x in memory.all_quotes() if x.get("revises") == q["quote_number"]]
+    return _json({"saved": True, "quote": q["quote_number"], "status": status, "total": q["totals"]["grand_total"],
+                  **({"note": f"{q['quote_number']} was later revised by {', '.join(newer)} - if the customer ordered "
+                              "the revised version, mark that one instead."} if newer else {})})
+
+
+# ---------------------------------------------------------------------------
 # Human-in-the-loop: clarify with clickable options
 # ---------------------------------------------------------------------------
 
@@ -564,15 +796,20 @@ def read_uploaded_files(upload_id: str, config: RunnableConfig = None) -> str:
 
 
 CUSTOMER_TOOLS = [
-    find_products, search_products, countertop_options, calculator,
+    find_products, search_products, find_by_size, countertop_options, flooring_quantity, show_line_images, calculator,
     ask_customer, create_quote, get_saved_quote, find_customer, hand_off_to_designer, read_uploaded_files,
 ]
-STAFF_TOOLS = CUSTOMER_TOOLS + [learn_rule]
+STAFF_TOOLS = CUSTOMER_TOOLS + [learn_rule, sales_report, set_quote_status]
 
 TOOL_LABELS = {
     "find_products": "Looking up your items",
     "search_products": "Searching the catalog",
     "countertop_options": "Checking countertop colors and prices",
+    "find_by_size": "Finding cabinets by size",
+    "flooring_quantity": "Working out boxes needed",
+    "show_line_images": "Showing door styles",
+    "sales_report": "Preparing the sales report",
+    "set_quote_status": "Updating the quote status",
     "calculator": "Calculating",
     "ask_customer": "Asking you to choose",
     "create_quote": "Creating the quote",

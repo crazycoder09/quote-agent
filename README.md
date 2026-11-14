@@ -154,6 +154,24 @@ when present, otherwise decrypts the `.enc` in memory; a rebuilt catalog is pick
 `create_quote` with item ids + quantities. `catalog/quote_engine.py` prices everything and refuses
 anything not exactly priceable (not quotable, needs staff confirmation, color in two price groups ...).
 
+## Pricing, tax, installation, reports (`config/pricing.json`)
+
+- **Customer price = wholesale cost x (1 + markup%)**, markup per business. Every supplier number is treated
+  as wholesale cost (HCC list x multiplier, KCD list x line multiplier, Pelican dealer price, countertop guide).
+- **Sales tax 7%** on products (cabinets, sinks, faucets, handles ...), none on countertops or services;
+  installed items are not taxed.
+- **Installation**: priced per cabinet / fixture and per sq ft for flooring and tile from the install rate
+  sheet, with an estimated time (hours / working days). Installation or delivery requires the address.
+- **Flooring / tile**: the assistant asks whether the area includes waste and recommends +10%
+  (`flooring_quantity` turns the area into boxes / sheets).
+- **Cabinets by size**: "30-inch wide wall cabinet", "36x15 bridge over the fridge" -> `find_by_size`.
+- **Door-style photos**: sample door + finished kitchen (`assets/catalog_images/<BRAND>/<line>/`,
+  extracted from the spec book by `scripts/extract_line_images.py`) shown in the chat.
+- **Staff only**: cost and margin on every quote; `sales_report` (quotes, sales, cost, margin, tax by
+  period / business) and `set_quote_status` (won / lost) in chat.
+- Values marked `confirmed: false` (markup, install rates) are placeholders until the owner sends the
+  real ones; staff see a warning in the sidebar.
+
 ## Folder structure
 
 ```

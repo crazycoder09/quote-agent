@@ -102,6 +102,15 @@ def import_pelican(bid: str, cfg: Dict[str, Any], root: Path) -> ImportResult:
                     extra={"model": re.match(r"(PL-[0-9A-Z]+)", sku.upper()).group(1)
                            if re.match(r"PL-[0-9A-Z]+", sku.upper()) else None,
                            **({"sqft_per_box": sqft_per_box} if sqft_per_box else {})})
+        # How much area one unit covers (used for waste and installation): flooring = sq ft per box,
+        # tile/mosaic = sheet size ('11.97 x 12.13 x 8mm' -> 1.01 sq ft per sheet)
+        if sqft_per_box:
+            item.extra["sqft_per_unit"] = round(sqft_per_box, 3)
+        elif category == "tile":
+            size = re.match(r"\s*([\d.]+)\s*x\s*([\d.]+)", desc)
+            if size:
+                item.extra["sqft_per_unit"] = round(float(size.group(1)) * float(size.group(2)) / 144, 3)
+                item.unit_note = item.unit_note or f"{item.extra['sqft_per_unit']:g} sq ft per sheet"
         if currency and currency.upper() != "USD":
             item.quotable, item.not_quotable_reason = False, f"currency {currency}"
             res.issue("error", "currency", f"{sku}: currency is {currency}", ref(idx))

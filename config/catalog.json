@@ -218,5 +218,13 @@
       "source": "cabinates/Zsolt/Zsolt.xlsx",
       "colors_pdf": "cabinates/Zsolt/SQFT Program Brochure (2).pdf"
     }
-  }
+  },
+  "pending_businesses": [
+    {
+      "name": "Milestone",
+      "sells": "cabinets (incl. sage green and other colors not in HCC/KCD)",
+      "status": "price sheets not received yet - a designer follows up with the price"
+    }
+  ],
+  "_pending_help": "Brands the owner sells but whose price files are not loaded yet. The assistant tells customers a designer will follow up for these. When the files arrive: add them to cabinates/, add an importer + an entry under businesses, rebuild the catalog, and remove them from this list."
 }

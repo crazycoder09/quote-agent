@@ -104,6 +104,8 @@ def classify_plumbing(code: str, description: str) -> str:
         return "bath_accessory"
     if re.search(r"\b1[68]g\b", t) or re.search(r"\bpl-fc\d", t):  # 16/18-gauge stainless, fireclay models
         return "kitchen_sink"
+    if _has(t, "shower base", "shower pan", "tile flange"):  # "Shower Base with Tile Flange" is not tile
+        return "shower"
     if _has(t, "mosaic", "tile", "subway", "hexagon", "penny round"):
         return "tile"
     if _has(t, "vanity top", "cultured marble"):

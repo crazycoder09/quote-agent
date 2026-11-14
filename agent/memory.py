@@ -144,6 +144,26 @@ def quotes_for_customer(customer: str, limit: int = 5) -> List[Dict[str, Any]]:
     return [i.value for i in items]
 
 
+def all_quotes(limit: int = 100000) -> List[Dict[str, Any]]:
+    """Every saved quote (all customers) - for staff sales / margin reports."""
+    return [i.value for i in get_store().search(("quotes",), limit=limit)]
+
+
+def set_quote_status(quote_number: str, status: str, note: str = "") -> Optional[Dict[str, Any]]:
+    """Mark a quote quoted / won (sold) / lost. Returns the updated quote, or None if not found."""
+    with _rw_lock:
+        idx = get_store().get(("quote_index",), quote_number.strip().upper())
+        if not idx:
+            return None
+        ns = ("quotes", idx.value["customer"])
+        item = get_store().get(ns, quote_number.strip().upper())
+        if not item:
+            return None
+        quote = {**item.value, "status": status, "status_note": note, "status_at": now()}
+        get_store().put(ns, quote["quote_number"], quote)
+        return quote
+
+
 def latest_quote_for_thread(thread_id: str) -> Optional[Dict[str, Any]]:
     """The most recent quote created in this conversation (the one 'add/remove/change' refers to)."""
     customer = get_thread(thread_id).get("customer")

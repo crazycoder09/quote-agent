@@ -61,7 +61,9 @@ def quote_brief(q: Dict[str, Any], full: bool = False) -> str:
             parts.append("countertops: " + ", ".join(f"{p['color']} {p['sqft']:g} sq ft" for p in q["countertops"]["pieces"]))
         return f"{q['quote_number']} ({q['date']}): {'; '.join(parts)}; total ${total:,.2f}"
     head = (f"{q['quote_number']} ({q['date']}) - {'assembled' if q.get('assembled') else 'not assembled'}, "
-            f"{'shipping' if q.get('shipping') else 'pickup'}" + (f", revises {q['revises']}" if q.get("revises") else ""))
+            f"{'delivery' if q.get('shipping') else 'pickup'}, "
+            f"{'we install' if q.get('installation_requested') or q.get('installation') else 'no installation'}"
+            + (f", revises {q['revises']}" if q.get("revises") else ""))
     lines = [head]
     for s in q["sections"]:
         lines.append(f"  [{s['business']}] {section_title(s)}")
@@ -79,6 +81,8 @@ def quote_brief(q: Dict[str, Any], full: bool = False) -> str:
         lines.append(f"  - not priced: {', '.join(q['unpriced_items'])}")
     if q.get("legacy"):
         lines.append("  (older quote format: look the items up again with find_products before editing)")
+    if q["totals"].get("tax"):
+        lines.append(f"  sales tax ${q['totals']['tax']:,.2f}")
     lines.append(f"  total ${total:,.2f}")
     return "\n".join(lines)
 
@@ -218,6 +222,23 @@ def render_quote_pdf(q: Dict[str, Any]) -> bytes:
         right_row(f"{ct['business_name']} total:", ct["total"], bold=True)
         pdf.ln(4)
 
+    # Installation (we install): priced per unit from the install sheet, with a time estimate
+    inst = q.get("installation")
+    if inst:
+        section_header("Installation" + (" (estimate)" if inst.get("estimate") else ""),
+                       f"Estimated time: about {inst['hours']:g} hours (~{inst['days']} working day"
+                       f"{'s' if inst['days'] != 1 else ''})")
+        pdf.set_font("Helvetica", "", 8)
+        with pdf.table(col_widths=(18, 92, 25, 25, 25), text_align=("CENTER", "LEFT", "RIGHT", "RIGHT", "RIGHT"),
+                       headings_style=head, line_height=5, borders_layout="HORIZONTAL_LINES", width=width) as table:
+            table.row(["Qty", "Description", "Unit", "Rate", "Total"])
+            for l in inst["lines"]:
+                table.row([f"{l['quantity']:g}", _latin1(l["label"]), "sq ft" if l["unit"] == "sqft" else "each",
+                           _money(l["rate"]), _money(l["amount"])])
+        pdf.ln(1)
+        right_row("Installation total:", inst["total"], bold=True)
+        pdf.ln(4)
+
     # Summary
     if pdf.get_y() > pdf.h - 70:
         pdf.add_page()
@@ -229,12 +250,16 @@ def render_quote_pdf(q: Dict[str, Any]) -> bytes:
         right_row(f"{s['business_name']}:", s["total"])
     if ct:
         right_row(f"{ct['business_name']}:", ct["total"])
+    if inst:
+        right_row("Installation:", inst["total"])
     for x in q.get("extras", []):
         right_row(f"{x['label']} - {x['detail']}:", x["amount"])
+    if t.get("tax"):
+        right_row(f"Sales tax ({t.get('tax_rate_percent', 0):g}% on taxable products):", t["tax"])
     pdf.line(pdf.w - 15 - 80, pdf.get_y() + 1, pdf.w - 15, pdf.get_y() + 1)
     pdf.ln(2)
     pdf.set_font("Helvetica", "B", 13)
-    pdf.cell(width - 40, 8, "Total" + (" before shipping" if q.get("shipping") else ""), align="R")
+    pdf.cell(width - 40, 8, "Total" + (" before delivery" if q.get("shipping") else ""), align="R")
     pdf.cell(40, 8, _money(t["grand_total"]), align="R", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
 
@@ -244,8 +269,10 @@ def render_quote_pdf(q: Dict[str, Any]) -> bytes:
     notes: List[str] = []
     if q.get("unpriced_items"):
         notes.append("To be confirmed by our designer (not priced): " + ", ".join(q["unpriced_items"]))
-    notes.append("Shipping requested - the office will send a separate shipping quote."
-                 if q.get("shipping") else "Pickup / no shipping.")
+    notes.append("Delivery requested - the office will send a separate delivery quote."
+                 if q.get("shipping") else "Pickup / no delivery.")
+    if inst:
+        notes.append("Installed items are not subject to sales tax. Countertops are fabricated and installed.")
     if q.get("notes"):
         notes.append("Notes: " + q["notes"])
     if q.get("footer"):

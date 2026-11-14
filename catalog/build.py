@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 from catalog.categories import label
 from catalog.importers import IMPORTERS
 from catalog.model import Business, ImportResult
-from catalog.pricing import unit_price
+from catalog.pricing import sell, unit_cost
 from catalog.validate import validate
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -103,7 +103,7 @@ def build(cfg: Optional[Dict[str, Any]] = None, root: Path = ROOT, out_dir: Opti
 def write_report(path: Path, results: List[ImportResult], cfg: Dict[str, Any], root: Path, published: bool,
                  db_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    out = [f"# Catalog build report", "", f"Built {datetime.now():%Y-%m-%d %H:%M}. "
+    out = ["# Catalog build report", "", f"Built {datetime.now():%Y-%m-%d %H:%M}. "
            + (f"**Published** to `{db_path.relative_to(root) if db_path.is_relative_to(root) else db_path}`."
               if published else "**NOT published** - fix the errors below (the previous catalog is unchanged)."), ""]
     out += ["## Summary", "", "| Business | Items | Quotable | Lines | Charges | Color groups | Colors | Checks | Errors | Warnings |",
@@ -187,15 +187,17 @@ def write_export(path: Path, results: List[ImportResult]) -> None:
         lines = {l.id: l for l in r.lines}
         for it in r.items:
             line = lines.get(it.line)
-            price = unit_price(it.list_price, r.business.pricing, line.multiplier if line else None,
-                               it.extra.get("price_type"), 1, it.tiers) if it.quotable else None
+            cost = unit_cost(it.list_price, r.business.pricing, line.multiplier if line else None,
+                             it.extra.get("price_type"), 1, it.tiers) if it.quotable else None
+            price = sell(cost, r.business.id)
             items.append([r.business.id, line.name if line else "", it.code, it.sku, it.description, label(it.category),
-                          it.section, it.unit, it.unit_note, it.list_price, price,
+                          it.section, it.unit, it.unit_note, it.list_price, cost, price,
                           "; ".join(f"{q}+: {p}" for q, p in it.tiers), it.assembly_price,
                           it.width_in, it.height_in, it.depth_in, "yes" if it.quotable else "no",
                           it.not_quotable_reason, it.extra.get("needs_confirmation", ""), it.source_ref])
     sheet("Items", ["Business", "Line / color", "Code", "Supplier SKU", "Description", "Category", "Section",
-                    "Unit", "Unit note", "List price", "Unit price (rules applied)", "Quantity breaks",
+                    "Unit", "Unit note", "List price (supplier file)", "Wholesale cost", "Customer price (cost + markup)",
+                    "Quantity breaks (cost)",
                     "Assembly price", "Width in", "Height in", "Depth in", "Quotable", "Why not quotable",
                     "Needs confirmation", "Source"], items, {5: 60, 20: 55})
     sheet("Countertop rates", ["Business", "Group", "Material", "Name", "$ per sq ft", "Note", "Source"],

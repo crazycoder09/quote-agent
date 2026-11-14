@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from catalog.normalize import clean_text, match_key, parse_dims, parse_rate, to_decimal  # noqa: E402
-from catalog.pricing import unit_price  # noqa: E402
+from catalog.pricing import sell, unit_cost  # noqa: E402
 
 D = Decimal
 
@@ -67,23 +67,30 @@ class CleaningTest(unittest.TestCase):
 class PricingTest(unittest.TestCase):
     def test_multiplier_rounds_like_excel(self):
         p = {"basis": "list_price_x_multiplier", "multiplier": "0.5"}
-        self.assertEqual(unit_price(D("100"), p), D("50.00"))
-        self.assertEqual(unit_price(D("0.05"), {"basis": "list_price_x_multiplier", "multiplier": "0.5"}), D("0.03"))
+        self.assertEqual(unit_cost(D("100"), p), D("50.00"))
+        self.assertEqual(unit_cost(D("0.05"), {"basis": "list_price_x_multiplier", "multiplier": "0.5"}), D("0.03"))
 
     def test_line_multiplier_and_list_items(self):
         p = {"basis": "list_price_x_line_multiplier"}
-        self.assertEqual(unit_price(D("200"), p, D("0.45")), D("90.00"))
-        self.assertEqual(unit_price(D("200"), p, D("0.45"), price_type="list"), D("200.00"))
+        self.assertEqual(unit_cost(D("200"), p, D("0.45")), D("90.00"))
+        self.assertEqual(unit_cost(D("200"), p, D("0.45"), price_type="list"), D("200.00"))
 
     def test_quantity_breaks_and_markup(self):
-        p = {"basis": "net_price_x_markup", "markup": "1.2"}
+        p = {"basis": "net_price_x_markup"}
         tiers = [(1, D("100")), (4, D("90")), (10, D("80"))]
-        self.assertEqual(unit_price(D("100"), p, quantity=3, tiers=tiers), D("120.00"))
-        self.assertEqual(unit_price(D("100"), p, quantity=4, tiers=tiers), D("108.00"))
-        self.assertEqual(unit_price(D("100"), p, quantity=25, tiers=tiers), D("96.00"))
+        self.assertEqual(unit_cost(D("100"), p, quantity=3, tiers=tiers), D("100.00"))
+        self.assertEqual(unit_cost(D("100"), p, quantity=4, tiers=tiers), D("90.00"))
+        self.assertEqual(unit_cost(D("100"), p, quantity=25, tiers=tiers), D("80.00"))
+
+    def test_customer_price_is_cost_plus_markup(self):
+        from catalog.pricing import markup_percent
+
+        m = markup_percent("HCC")
+        self.assertEqual(sell(D("100.00"), "HCC"), (D("100") * (1 + m / 100)).quantize(D("0.01")))
+        self.assertIsNone(sell(None, "HCC"))
 
     def test_missing_price(self):
-        self.assertIsNone(unit_price(None, {"basis": "list_price_x_multiplier", "multiplier": "1"}))
+        self.assertIsNone(unit_cost(None, {"basis": "list_price_x_multiplier", "multiplier": "1"}))
 
 
 SOURCES = ROOT / "cabinates"

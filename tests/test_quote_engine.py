@@ -45,10 +45,16 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(len(m.items), 1, f"{code}: {[(i['sku'], i['line_id']) for i in m.items]}")
         return {"item_id": m.items[0]["id"], "code": code, "quantity": qty, "note": note}
 
-    def price(self, items, countertops=(), assembled=False, shipping=False, extras=None):
+    def price(self, items, countertops=(), assembled=False, shipping=False, extras=None, installation=False):
         from catalog.quote_engine import price_quote
 
-        return price_quote(self.cat, list(items), list(countertops), assembled, shipping, extras)
+        return price_quote(self.cat, list(items), list(countertops), assembled, shipping, extras, installation)
+
+    @staticmethod
+    def sell(cost, business):
+        from catalog.pricing import sell
+
+        return float(sell(Decimal(str(cost)), business))
 
     def test_hcc_sample_order_matches_workbook(self):
         import openpyxl
@@ -60,10 +66,14 @@ class EngineTest(unittest.TestCase):
                  for r in range(13, 63) if order[f"B{r}"].value]
         q, problems, _ = self.price(items)
         self.assertEqual(problems, [])
-        self.assertAlmostEqual(q["totals"]["grand_total"], float(order["J64"].value), places=2)
+        # wholesale cost = the workbook's own "Your Price" total; customer price = each line's cost + markup
+        self.assertAlmostEqual(q["sections"][0]["cost"], float(order["J64"].value), places=2)
+        expected_sell = sum(self.sell(i["unit_cost"], "HCC") * i["quantity"] for i in q["sections"][0]["items"])
+        self.assertAlmostEqual(q["sections"][0]["subtotal"], round(expected_sell, 2), places=2)
         q2, _, _ = self.price(items, assembled=True)
-        expected_fee = float((Decimal(str(order["J64"].value)) * Decimal("0.10")).quantize(Decimal("0.01")))
-        self.assertAlmostEqual(q2["sections"][0]["assembly_fee"], expected_fee, places=2)
+        fee_cost = (Decimal(str(order["J64"].value)) * Decimal("0.10")).quantize(Decimal("0.01"))
+        self.assertAlmostEqual(q2["sections"][0]["cost"], float(Decimal(str(order["J64"].value)) + fee_cost), places=2)
+        self.assertAlmostEqual(q2["sections"][0]["assembly_fee"], self.sell(fee_cost, "HCC"), places=2)
 
     def test_kcd_assembly_per_cabinet_with_pickup_extra(self):
         it = self.item("B15", "KCD", "Brooklyn Fawn", 2)
@@ -71,9 +81,9 @@ class EngineTest(unittest.TestCase):
         extra = Decimal(self.cat.businesses["KCD"]["pricing"]["assembly"]["pickup_extra_per_cabinet"])
         q, problems, _ = self.price([it], assembled=True, shipping=False)
         self.assertEqual(problems, [])
-        self.assertAlmostEqual(q["sections"][0]["assembly_fee"], float((row["assembly_price"] + extra) * 2), places=2)
+        self.assertAlmostEqual(q["sections"][0]["assembly_fee"], self.sell((row["assembly_price"] + extra) * 2, "KCD"), places=2)
         q, _, _ = self.price([it], assembled=True, shipping=True)
-        self.assertAlmostEqual(q["sections"][0]["assembly_fee"], float(row["assembly_price"] * 2), places=2)
+        self.assertAlmostEqual(q["sections"][0]["assembly_fee"], self.sell(row["assembly_price"] * 2, "KCD"), places=2)
         q, _, _ = self.price([it], assembled=False)
         self.assertEqual(q["sections"][0]["assembly_fee"], 0.0)
 
@@ -85,7 +95,8 @@ class EngineTest(unittest.TestCase):
         for min_qty, price in tiers:
             q, problems, _ = self.price([{**it, "quantity": min_qty}])
             self.assertEqual(problems, [])
-            self.assertAlmostEqual(q["sections"][0]["items"][0]["unit_price"], float(price), places=2)
+            self.assertAlmostEqual(q["sections"][0]["items"][0]["unit_cost"], float(price), places=2)
+            self.assertAlmostEqual(q["sections"][0]["items"][0]["unit_price"], self.sell(price, "PELICAN"), places=2)
 
     def test_mixed_quote_sections_and_totals(self):
         items = [self.item("W2136", "HCC", "Colonial White", 2), self.item("B15", "KCD", "Brooklyn Fawn"),
@@ -99,10 +110,14 @@ class EngineTest(unittest.TestCase):
         self.assertEqual([s["business"] for s in q["sections"]], ["HCC", "KCD", "PELICAN"])
         piece = q["countertops"]["pieces"][0]
         rate = self.cat.countertop_color(color)[0]["rate"]
-        self.assertAlmostEqual(piece["material_amount"], float(rate * 40), places=2)
-        self.assertAlmostEqual(piece["services"][0]["amount"], float(lf["amount"] * 20), places=2)
-        parts = sum(s["total"] for s in q["sections"]) + q["countertops"]["total"]
+        self.assertAlmostEqual(piece["material_amount"], self.sell(rate * 40, "ZSOLT"), places=2)
+        self.assertAlmostEqual(piece["services"][0]["amount"], round(self.sell(lf["amount"], "ZSOLT") * 20, 2), places=2)
+        parts = sum(s["total"] for s in q["sections"]) + q["countertops"]["total"] + q["totals"]["tax"]
         self.assertAlmostEqual(q["totals"]["grand_total"], round(parts, 2), places=2)
+        # margin = customer price - wholesale cost (products, assembly, countertops)
+        products = sum(s["total"] for s in q["sections"]) + q["countertops"]["total"]
+        cost = sum(s["cost"] for s in q["sections"]) + q["countertops"]["cost"]
+        self.assertAlmostEqual(q["totals"]["margin"], round(products - cost, 2), places=2)
 
     def test_guards(self):
         good = self.item("W2136", "HCC", "Colonial White")
@@ -175,6 +190,62 @@ class EngineTest(unittest.TestCase):
             mem.STORAGE_DIR, mem.CHECKPOINT_DB_PATH, mem.STORE_DB_PATH = old
 
 
+    def test_sales_tax_rules(self):
+        from catalog.pricing import tax_rate
+
+        cab = self.item("W2136", "HCC", "Colonial White", 2)
+        color = self.cat._q("select c.name from colors c join material_groups g on g.id=c.group_id limit 1")[0]["name"]
+        q, p, _ = self.price([cab], [{"color": color, "sqft": 30}])
+        self.assertEqual(p, [])
+        s = q["sections"][0]
+        self.assertAlmostEqual(s["tax"], float((Decimal(str(s["subtotal"])) * tax_rate()).quantize(Decimal("0.01"))), places=2)
+        self.assertAlmostEqual(q["totals"]["tax"], s["tax"], places=2)  # countertops add no tax
+        q, _, _ = self.price([cab], [{"color": color, "sqft": 30}], shipping=True, installation=True)
+        self.assertEqual(q["totals"]["tax"], 0.0)  # installed items are not taxed
+
+    def test_installation_price_and_time(self):
+        from catalog.pricing import rules
+
+        floor = self.cat._q("select sku from items where category='flooring' and json_extract(extra,'$.sqft_per_unit') "
+                            "is not null limit 1")[0]["sku"]
+        items = [self.item("W2136", "HCC", "Colonial White", 3), self.item(floor, "PELICAN", qty=2)]
+        q, p, _ = self.price(items, installation=True)
+        self.assertEqual(p, [])
+        r = rules()["installation"]["rates"]
+        inst = {l["category"]: l for l in q["installation"]["lines"]}
+        self.assertAlmostEqual(inst["cabinet"]["amount"], 3 * r["cabinet"]["price"], places=2)
+        per = self.cat.lookup(floor, "PELICAN").items[0]["extra"]["sqft_per_unit"]
+        self.assertAlmostEqual(inst["flooring"]["quantity"], round(2 * per, 2), places=2)
+        hours = (3 * r["cabinet"]["minutes"] + 2 * per * r["flooring"]["minutes"]) / 60
+        self.assertAlmostEqual(q["installation"]["hours"], round(hours, 1), places=1)
+        self.assertGreaterEqual(q["installation"]["days"], 1)
+        q2, _, _ = self.price(items, installation=False)
+        self.assertIsNone(q2["installation"])
+
+    def test_find_by_size(self):
+        exact, near = self.cat.find_by_size("wall", 30, 36, None, "HCC", ["colonial-white"])
+        self.assertIn("W3036", [i["code"] for i in exact])
+        exact, _ = self.cat.find_by_size("bridge", 30, 12, 24, "HCC", ["colonial-white"])
+        self.assertIn("W301224", [i["code"] for i in exact])
+        exact, near = self.cat.find_by_size("base", 16, None, None, "HCC", ["colonial-white"])
+        self.assertEqual(exact, [])
+        self.assertTrue(near)  # nearest real widths, never a made-up size
+
+    def test_flooring_quantity_waste(self):
+        import json
+        import math
+
+        from agent.quote_tools import flooring_quantity
+
+        row = self.cat._q("select id, extra from items where category='flooring' and json_extract(extra,'$.sqft_per_unit') "
+                          "is not null limit 1")[0]
+        per = json.loads(row["extra"])["sqft_per_unit"]
+        with_waste = json.loads(flooring_quantity.invoke({"item_id": row["id"], "area_sqft": 400, "area_includes_waste": False}))
+        self.assertEqual(with_waste["quantity"], math.ceil(round(440 / per, 6)))
+        included = json.loads(flooring_quantity.invoke({"item_id": row["id"], "area_sqft": 400, "area_includes_waste": True}))
+        self.assertEqual(included["quantity"], math.ceil(round(400 / per, 6)))
+
+
 @unittest.skipUnless(SOURCES.exists(), "client price files not present (cabinates/ is not in git)")
 class DocumentTest(unittest.TestCase):
     def test_pdf_and_brief_for_new_and_old_quotes(self):
@@ -225,3 +296,100 @@ class ToolsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(SOURCES.exists(), "client price files not present (cabinates/ is not in git)")
+class WorkflowTest(unittest.TestCase):
+    """create_quote rules, privacy of cost, photos, and staff sales / margin reports (temporary storage)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import agent.memory as mem
+        from catalog.store import get_catalog
+
+        cls.mem, cls.cat = mem, get_catalog()
+        cls.saved = dict(mem._singletons)
+        cls.old = (mem.STORAGE_DIR, mem.CHECKPOINT_DB_PATH, mem.STORE_DB_PATH)
+        tmp = Path(tempfile.mkdtemp(prefix="workflow-test-"))
+        mem._singletons.clear()
+        mem.STORAGE_DIR, mem.CHECKPOINT_DB_PATH, mem.STORE_DB_PATH = tmp, tmp / "c.db", tmp / "s.db"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.mem._singletons.clear()
+        cls.mem._singletons.update(cls.saved)
+        cls.mem.STORAGE_DIR, cls.mem.CHECKPOINT_DB_PATH, cls.mem.STORE_DB_PATH = cls.old
+
+    def quote(self, role="customer", **kw):
+        import json
+
+        from agent.quote_tools import create_quote
+
+        m = self.cat.lookup("W2136", "HCC", ["colonial-white"])
+        args = {"customer_name": "Flow Test", "customer_phone": "4075550190", "assembled": False, "shipping": False,
+                "items": [{"item_id": m.items[0]["id"], "code": "W2136", "quantity": 2}], **kw}
+        cfg = {"configurable": {"thread_id": "flow-" + role, "role": role}}
+        return json.loads(create_quote.invoke(args, config=cfg))
+
+    def test_install_or_delivery_needs_address(self):
+        out = self.quote(installation=True)
+        self.assertEqual(out["status"], "not_created")
+        self.assertTrue(any("address" in p for p in out["problems"]))
+        out = self.quote(shipping=True)
+        self.assertEqual(out["status"], "not_created")
+        out = self.quote(installation=True, customer_address="12 Main St, Orlando, FL 32801")
+        self.assertEqual(out["status"], "created")
+        self.assertIn("installation", out)
+        self.assertEqual(out["sales_tax"], 0.0)
+
+    def test_cost_only_for_staff(self):
+        from agent.quote_tools import find_products
+
+        customer = self.quote()
+        self.assertNotIn("staff_only", customer)
+        staff = self.quote(role="staff")
+        self.assertIn("margin_percent", staff["staff_only"])
+        args = {"codes": ["W2136"], "business": "HCC", "line": "Colonial White"}
+        self.assertNotIn("cost", find_products.invoke(args, config={"configurable": {"role": "customer"}}))
+        self.assertIn("staff: cost", find_products.invoke(args, config={"configurable": {"role": "staff"}}))
+
+    def test_line_images(self):
+        import json
+
+        from agent.quote_tools import show_line_images
+
+        out = json.loads(show_line_images.invoke({"lines": ["Colonial White", "Brooklyn Fawn"]}))
+        self.assertEqual([i["line"] for i in out["images"]], ["Colonial White"])
+        self.assertTrue((ROOT / out["images"][0]["door"]).exists() and (ROOT / out["images"][0]["kitchen"]).exists())
+        self.assertTrue(any("Brooklyn Fawn" in m for m in out["missing"]))
+
+    def test_sales_report_and_status(self):
+        import json
+
+        from agent.quote_tools import sales_report, set_quote_status
+
+        a, b = self.quote(), self.quote()
+        staff = {"configurable": {"role": "staff"}}
+        self.assertIn("error", json.loads(sales_report.invoke({}, config={"configurable": {"role": "customer"}})))
+        self.assertIn("error", json.loads(set_quote_status.invoke({"quote_number": a["quote_number"], "status": "won"},
+                                                                  config={"configurable": {"role": "customer"}})))
+        self.assertTrue(json.loads(set_quote_status.invoke({"quote_number": a["quote_number"], "status": "sold"},
+                                                           config=staff))["saved"])
+        set_quote_status.invoke({"quote_number": b["quote_number"], "status": "lost"}, config=staff)
+        report = json.loads(sales_report.invoke({}, config=staff))
+        quotes = [self.mem.get_quote(n) for n in (a["quote_number"], b["quote_number"])]
+        self.assertEqual(report["won_sales"]["quotes"], 1)
+        self.assertAlmostEqual(report["won_sales"]["margin"], quotes[0]["totals"]["margin"], places=2)
+        self.assertGreaterEqual(report["all_quotes"]["quotes"], 2)
+        self.assertIn("HCC", report["by_business"])
+
+
+class RevisionChainTest(unittest.TestCase):
+    def test_sold_older_version_counts_once(self):
+        from agent.quote_tools import _latest_quotes
+
+        qs = [{"quote_number": "HQ-1", "created_at": "1", "status": "won"},
+              {"quote_number": "HQ-2", "created_at": "2", "revises": "HQ-1"},
+              {"quote_number": "HQ-3", "created_at": "3"},
+              {"quote_number": "HQ-4", "created_at": "4", "revises": "HQ-3"}]
+        self.assertEqual(sorted(q["quote_number"] for q in _latest_quotes(qs)), ["HQ-1", "HQ-4"])

@@ -11,7 +11,8 @@ every query is a memory lookup, and a rebuilt catalog is picked up automatically
     cat.lookup(codes, business, line)     exact codes -> items (aliases, hinge suffix, closest real items)
     cat.search(query, category, ...)      descriptive search (full-text, grouped across lines)
     cat.countertop_color(name)            color -> price group + rate
-    cat.unit_price(item, quantity)        the business's pricing rules (catalog/pricing.py)
+    cat.unit_cost(item, quantity)         wholesale cost (supplier rules, catalog/pricing.py)
+    cat.unit_price(item, quantity)        customer price = cost x (1 + markup%)
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from catalog.categories import CATEGORIES
 from catalog.normalize import match_key, money
-from catalog.pricing import unit_price
+from catalog.pricing import sell, unit_cost
 
 ROOT = Path(__file__).resolve().parent.parent
 STOP_WORDS = {"a", "an", "the", "in", "with", "for", "of", "and", "or", "to", "inch", "inches", "in.", "x", "by",
@@ -118,14 +119,20 @@ class Catalog:
         item["tiers"] = [(t["min_qty"], _cents(t["price_cents"]))
                          for t in self._q("select min_qty, price_cents from price_tiers where item_id=? order by min_qty", (r["id"],))]
         item["line_name"] = self.line_name(r["business_id"], r["line_id"])
-        item["unit_price"] = self.unit_price(item, quantity) if r["quotable"] else None
+        item["unit_cost"] = self.unit_cost(item, quantity) if r["quotable"] else None
+        item["unit_price"] = sell(item["unit_cost"], r["business_id"]) if r["quotable"] else None
         return item
 
-    def unit_price(self, item: Dict[str, Any], quantity: int = 1) -> Optional[Decimal]:
+    def unit_cost(self, item: Dict[str, Any], quantity: int = 1) -> Optional[Decimal]:
+        """Wholesale cost of one unit (supplier price list + its rules)."""
         biz = self.businesses[item["business_id"]]
         line = self.line(item["business_id"], item["line_id"])
-        return unit_price(item["list_price"], biz["pricing"], line["multiplier"] if line else None,
-                          item["extra"].get("price_type"), quantity, item["tiers"])
+        return unit_cost(item["list_price"], biz["pricing"], line["multiplier"] if line else None,
+                         item["extra"].get("price_type"), quantity, item["tiers"])
+
+    def unit_price(self, item: Dict[str, Any], quantity: int = 1) -> Optional[Decimal]:
+        """Customer price of one unit = wholesale cost x (1 + markup%)."""
+        return sell(self.unit_cost(item, quantity), item["business_id"])
 
     def get_item(self, item_id: int, quantity: int = 1) -> Optional[Dict[str, Any]]:
         rows = self._q("select * from items where id=?", (item_id,))
@@ -250,6 +257,49 @@ class Catalog:
             out.append({"business": bid, "code": items[0]["code"], "items": items})
         return out
 
+    # -- by size ("30-inch wide wall cabinet") ------------------------------------------------------------
+
+    SIZE_KINDS = {
+        "wall": ("wall", "bridge"), "bridge": ("bridge", "wall"), "base": ("base",), "sink_base": ("sink_base",),
+        "drawer_base": ("drawer_base",), "corner": ("corner",), "tall": ("tall", "oven"), "pantry": ("tall",),
+        "oven": ("oven", "tall"), "vanity": ("vanity",), "any": (),
+    }
+
+    def find_by_size(self, kind: str, width: float, height: Optional[float] = None, depth: Optional[float] = None,
+                     business: Optional[str] = None, line_ids: Optional[Sequence[str]] = None,
+                     tolerance: float = 3.0) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Cabinets of a type and size -> (exact matches, nearest real sizes). Heights/depths that a supplier
+        doesn't print (KCD standard bases / walls) don't exclude an item; a bridge is a wall cabinet <= 24" tall."""
+        types = self.SIZE_KINDS.get(kind, ())
+
+        def query(w_low: float, w_high: float, exact: bool) -> List[sqlite3.Row]:
+            sql = "select * from items where category='cabinet' and width_in between ? and ?"
+            params: List[Any] = [w_low, w_high]
+            if types:
+                sql += f" and cabinet_type in ({','.join('?' * len(types))})"
+                params += list(types)
+            if kind == "bridge":
+                sql += " and (height_in is null or height_in <= 24)"
+            if height is not None:
+                sql += " and (height_in is null or height_in between ? and ?)"
+                params += [height - (0 if exact else tolerance), height + (0 if exact else tolerance)]
+            if depth is not None:
+                sql += " and (depth_in is null or depth_in between ? and ?)"
+                params += [depth - (0 if exact else tolerance), depth + (0 if exact else tolerance)]
+            if business:
+                sql += " and business_id=?"
+                params.append(business)
+            if line_ids:
+                sql += f" and (line_id in ({','.join('?' * len(line_ids))}) or line_id is null)"
+                params += list(line_ids)
+            sql += " order by abs(width_in - ?), abs(coalesce(height_in, ?) - ?), business_id, length(code)"
+            params += [width, height or 0, height or 0]
+            return self._q(sql + " limit 400", params)
+
+        exact = [self.item_dict(r) for r in query(width, width, True)]
+        near = [] if exact else [self.item_dict(r) for r in query(width - tolerance, width + tolerance, False)]
+        return exact, near
+
     # -- countertops --------------------------------------------------------------------------------------
 
     def countertop_business(self) -> Optional[str]:
@@ -314,6 +364,13 @@ class Catalog:
             out.append(f"- {bid} = {b['name']}: {b['kind']}."
                        + (f" Lines/colors: {', '.join(lines)}." if lines else "")
                        + (f" ({'; '.join(notes)})" if notes else ""))
+        try:  # brands the owner sells whose price files aren't loaded yet (config/catalog.json)
+            pending = json.loads((ROOT / "config" / "catalog.json").read_text()).get("pending_businesses", [])
+        except Exception:  # noqa: BLE001
+            pending = []
+        for p in pending:
+            out.append(f"- {p['name']} - NOT LOADED YET ({p.get('sells', '')}): {p.get('status', 'no prices yet')}. "
+                       "Can't quote it: a designer follows up; offer the closest loaded line.")
         return "\n".join(out)
 
     def status(self) -> List[Dict[str, Any]]:

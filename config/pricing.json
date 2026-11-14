@@ -1,0 +1,53 @@
+{
+  "_help": "Owner's pricing rules. Every supplier price in the catalog is the WHOLESALE COST to us; the customer price = cost x (1 + markup%). Values marked confirmed=false are placeholders until the owner sends the real ones - change them here, no code change, the app picks them up immediately.",
+
+  "markup": {
+    "confirmed": false,
+    "default_percent": 35,
+    "by_business": {
+      "HCC": 35,
+      "KCD": 35,
+      "PELICAN": 35,
+      "ZSOLT": 35
+    },
+    "_help": "Markup on wholesale cost per business (customer price = cost x (1 + percent/100)). Applies to products, supplier assembly fees, countertop material and countertop services. PLACEHOLDER 35% until the owner confirms."
+  },
+
+  "sales_tax": {
+    "rate_percent": 7,
+    "taxable_categories": ["cabinet", "filler_panel_molding", "cabinet_accessory", "hood", "hardware", "shelf",
+                           "kitchen_sink", "bathroom_sink", "sink_accessory", "faucet", "bathtub", "toilet", "shower",
+                           "vanity_top", "bath_accessory", "flooring", "flooring_trim", "tile", "quartz_slab", "part",
+                           "sample"],
+    "not_taxed": "Countertops (fabricated + installed), installation, assembly, delivery, modifications (services).",
+    "installed_items_exempt": true,
+    "_help": "7% on products (cabinets, sinks, faucets, handles ... per the owner). No tax on countertops. When the quote includes installation, the installed items are not taxed."
+  },
+
+  "installation": {
+    "confirmed": false,
+    "crew_hours_per_day": 8,
+    "rates": {
+      "cabinet":              {"price": 100.00, "per": "each", "minutes": 60,  "label": "Cabinet installation"},
+      "filler_panel_molding": {"price": 25.00,  "per": "each", "minutes": 15,  "label": "Fillers, panels & molding"},
+      "cabinet_accessory":    {"price": 25.00,  "per": "each", "minutes": 15,  "label": "Cabinet accessories"},
+      "shelf":                {"price": 25.00,  "per": "each", "minutes": 20,  "label": "Floating shelves"},
+      "hardware":             {"price": 5.00,   "per": "each", "minutes": 5,   "label": "Handles & knobs"},
+      "hood":                 {"price": 150.00, "per": "each", "minutes": 120, "label": "Range hood"},
+      "kitchen_sink":         {"price": 150.00, "per": "each", "minutes": 90,  "label": "Kitchen sink"},
+      "bathroom_sink":        {"price": 100.00, "per": "each", "minutes": 60,  "label": "Bathroom sink"},
+      "faucet":               {"price": 75.00,  "per": "each", "minutes": 45,  "label": "Faucet"},
+      "toilet":               {"price": 125.00, "per": "each", "minutes": 90,  "label": "Toilet"},
+      "vanity_top":           {"price": 75.00,  "per": "each", "minutes": 45,  "label": "Vanity top"},
+      "flooring":             {"price": 2.50,   "per": "sqft", "minutes": 2,   "label": "Flooring installation"},
+      "tile":                 {"price": 8.00,   "per": "sqft", "minutes": 8,   "label": "Tile installation"}
+    },
+    "_help": "PLACEHOLDER install price sheet (price per unit + labor minutes per unit, used for the time estimate). Replace with the owner's install price sheet. Countertops are already fabricated + installed in their price. Categories not listed here are not installed by us."
+  },
+
+  "flooring": {
+    "waste_percent": 10,
+    "categories": ["flooring", "tile"],
+    "_help": "Ask whether the customer's area already includes waste; if not, recommend adding this percent."
+  }
+}

@@ -274,6 +274,12 @@ def render_sidebar() -> None:
                        + ". Update models in config/settings.json.", icon=":material/warning:")
 
         if st.session_state["role"] == "staff":
+            from catalog.pricing import unconfirmed
+
+            placeholders = unconfirmed()
+            if placeholders:
+                st.warning("Placeholder values in config/pricing.json: " + ", ".join(placeholders)
+                           + " - set the owner's real numbers.", icon=":material/warning:")
             render_handoffs()
             render_learned_rules()
 
@@ -405,9 +411,26 @@ def render_quote_card(quote_number: str) -> None:
                                  "Unit price": x["rate"], "Total": x["amount"]})
             st.dataframe(rows, hide_index=True, width="stretch", column_config=money_cols)
             st.caption(f"Countertops total **\\${ct['total']:,.2f}**")
+        inst = q.get("installation")
+        if inst:
+            st.markdown("**Installation**" + (" (estimate)" if inst.get("estimate") else ""))
+            rows = [{"Item": l["label"], "Qty": f"{l['quantity']:g} {'sq ft' if l['unit'] == 'sqft' else ''}".strip(),
+                     "Unit price": l["rate"], "Total": l["amount"]} for l in inst["lines"]]
+            st.dataframe(rows, hide_index=True, width="stretch", column_config=money_cols)
+            st.caption(f"Installation total **\\${inst['total']:,.2f}** · estimated time about "
+                       f"**{inst['hours']:g} hours (~{inst['days']} working day{'s' if inst['days'] != 1 else ''})**")
         lines = [money_safe(f"{x['label']}: **${x['amount']:,.2f}** — {x['detail']}") for x in q.get("extras", [])]
-        lines.append("Shipping: quoted separately by the office" if q.get("shipping") else "Pickup / no shipping")
+        if t.get("tax"):
+            lines.append(f"Sales tax ({t.get('tax_rate_percent', 0):g}% on taxable products): **\\${t['tax']:,.2f}**")
+        elif q.get("installation"):
+            lines.append("Sales tax: none on installed items and countertops")
+        lines.append("Delivery: quoted separately by the office" if q.get("shipping") else "Pickup / no delivery")
         st.markdown("  \n".join(lines))
+        if st.session_state.get("role") == "staff" and "cost" in t:
+            ph = (q.get("pricing_snapshot") or {}).get("placeholders") or []
+            st.info(f"Staff only - wholesale cost \\${t['cost']:,.2f} · margin \\${t['margin']:,.2f} "
+                    f"({t['margin_percent']:g}%)" + (f" · placeholders in use: {', '.join(ph)}" if ph else ""),
+                    icon=":material/insights:")
         if q.get("unpriced_items"):
             st.warning("To be confirmed by a designer: " + ", ".join(q["unpriced_items"]), icon=":material/info:")
         st.download_button(
@@ -423,7 +446,7 @@ def render_quote_card(quote_number: str) -> None:
 
 def render_assistant_turn(parts) -> None:
     thinking, steps, quotes, answer = [], [], [], ""
-    questions, clarifications = {}, []
+    questions, clarifications, galleries = {}, [], []
     for m in parts:
         if isinstance(m, AIMessage):
             reasoning = m.additional_kwargs.get("reasoning_content")
@@ -441,6 +464,11 @@ def render_assistant_turn(parts) -> None:
             except (TypeError, ValueError):
                 chosen = m.content
             clarifications.append((questions[m.tool_call_id], chosen))
+        elif isinstance(m, ToolMessage) and m.name == "show_line_images":
+            try:
+                galleries.extend(json.loads(m.content).get("images", []))
+            except (TypeError, ValueError):
+                pass
         elif isinstance(m, ToolMessage) and m.name == "create_quote":
             try:
                 data = json.loads(m.content)
@@ -461,8 +489,23 @@ def render_assistant_turn(parts) -> None:
         st.markdown(f'<span class="chosen">↳ {html_escape(picked)}</span>', unsafe_allow_html=True)
     if answer:
         bubble(answer)
+    render_line_images(galleries)
     for number in quotes:
         render_quote_card(number)
+
+
+def render_line_images(galleries: list) -> None:
+    """Sample door + finished kitchen photo for each door style the assistant showed."""
+    root = Path(__file__).parent
+    for g in galleries[:6]:
+        door, kitchen = g.get("door"), g.get("kitchen")
+        with st.container(border=True, key=f"lineimg_{uuid.uuid4().hex[:8]}"):
+            st.markdown(f"**{html_escape(g.get('line', ''))}**")
+            c1, c2 = st.columns([1, 3])
+            if door and (root / door).exists():
+                c1.image(str(root / door), caption="Sample door", width="stretch")
+            if kitchen and (root / kitchen).exists():
+                c2.image(str(root / kitchen), caption="Finished kitchen", width="stretch")
 
 
 def bubble(text: str, who: str = "a") -> None:
