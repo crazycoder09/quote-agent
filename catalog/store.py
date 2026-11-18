@@ -336,8 +336,25 @@ class Catalog:
                 for r in rows]
 
     def install_service(self, code: str) -> Optional[Dict[str, Any]]:
+        """Exact code, or a longer / shorter spelling of exactly ONE code (an AI may complete or shorten it)."""
         key = match_key(code)
-        return next((s for s in self.install_services() if match_key(s["code"]) == key), None)
+        services = self.install_services()
+        exact = next((s for s in services if match_key(s["code"]) == key), None)
+        if exact or len(key) < 12:
+            return exact
+        near = [s for s in services if match_key(s["code"]).startswith(key) or key.startswith(match_key(s["code"]))]
+        return near[0] if len(near) == 1 else None
+
+    def install_suggestions(self, text: str, limit: int = 4) -> List[Dict[str, Any]]:
+        """Services whose name or code shares the most words with the text (for a helpful error)."""
+        words = {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2} - {"installation", "flooring", "cabinet"}
+        scored = []
+        for s in self.install_services():
+            have = set(re.findall(r"[a-z0-9]+", f"{s['code']} {s['name']}".lower()))
+            score = len(words & have)
+            if score:
+                scored.append((score, s))
+        return [s for _, s in sorted(scored, key=lambda x: -x[0])[:limit]]
 
     def colors_in_group(self, group_id: str) -> List[str]:
         return [r["name"] for r in self._q("select name from colors where group_id=? order by name", (group_id,))]

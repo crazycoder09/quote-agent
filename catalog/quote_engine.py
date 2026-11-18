@@ -68,7 +68,9 @@ def price_quote(cat: Catalog, items: List[Dict[str, Any]], countertops: List[Dic
         svc = cat.install_service(str(raw.get("code") or ""))
         qty = Decimal(str(raw.get("quantity") or 0))
         if svc is None:
-            problems.append(f"Install service '{raw.get('code')}' not found - use a code from install_options")
+            hints = cat.install_suggestions(str(raw.get("code") or ""))
+            problems.append(f"Install service '{raw.get('code')}' not found - copy the code exactly from install_options"
+                            + (". Did you mean: " + "; ".join(f"{h['code']} ({h['name'][:50]})" for h in hints) if hints else ""))
             continue
         if svc["quoted"] or svc["price"] is None:
             problems.append(f"'{svc['name']}' is quoted by the job - leave it out and add it to unpriced_items")

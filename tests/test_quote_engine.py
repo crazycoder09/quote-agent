@@ -460,6 +460,21 @@ class InstallSheetTest(unittest.TestCase):
         _, p, _ = self.price(install_services=[{"code": quoted["code"], "quantity": 1}])
         self.assertTrue(p and "quoted by the job" in p[0])
 
+    def test_config_codes_exist_and_lookup_is_tolerant(self):
+        from catalog.pricing import install_rules
+
+        codes = {s["code"] for s in self.cat.install_services()}
+        used = {r["service"] for r in install_rules()["auto"]} | \
+            {r["assembly_if_rta"] for r in install_rules()["auto"] if r.get("assembly_if_rta")}
+        self.assertEqual(used - codes, set())  # config/pricing.json only maps to services that exist
+        self.assertTrue(all(not c.endswith("-") for c in codes))
+        backsplash = next(c for c in codes if "backsplash-30-sqft-and-under" in c)
+        longer = backsplash + "-are-doing-backsplash-you-must-select-this"  # an AI "completing" the code
+        self.assertEqual(self.cat.install_service(longer)["code"], backsplash)
+        self.assertEqual(self.cat.install_service("flooring-installation-backsplash-30-sqft-and-under")["code"], backsplash)
+        self.assertIsNone(self.cat.install_service("backsplash"))  # ambiguous -> not guessed
+        self.assertTrue(self.cat.install_suggestions("backsplash install"))
+
     def test_import_reported_sheet_inconsistencies(self):
         kinds = {r["kind"] for r in self.cat._q("select kind from issues where business_id='INSTALL'")}
         self.assertIn("time_formula_mismatch", kinds)

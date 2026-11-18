@@ -114,6 +114,16 @@ def _formula_minutes(formula: Any, qty_col: str = "C") -> Optional[float]:
     return None
 
 
+def _short_code(full: str, limit: int = 60) -> str:
+    """Code cut at a word boundary ('...backsplash-30-sqft-and-under-if-you'), never mid-word ('...-if-you-ar')."""
+    out = ""
+    for word in full.split("-"):
+        if len(out) + len(word) + (1 if out else 0) > limit:
+            break
+        out = f"{out}-{word}" if out else word
+    return out
+
+
 def _rows(ws, wf=None) -> List[Dict[str, Any]]:
     out, section = [], ""
     for r in range(8, 39):
@@ -203,7 +213,7 @@ def import_install(bid: str, cfg: Dict[str, Any], root: Path) -> ImportResult:
             if minutes is None and not quoted and section != "fees" and "dumpster" not in desc.lower() \
                     and unit not in ("bag",) and "schluter" not in desc.lower():
                 res.issue("info", "no_time", f"{group}: no install time for '{desc}'", ref(t_name, f"A{r}"))
-            code = slug(f"{group} {section} {desc}")[:60].strip("-")
+            code = _short_code(slug(f"{group} {section} {desc}"))
             n = 2
             while code in seen_codes:
                 code = f"{code[:57]}-{n}"

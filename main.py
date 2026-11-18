@@ -20,7 +20,7 @@ from datetime import date
 from pathlib import Path
 
 import streamlit as st
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from agent import agents, memory
@@ -608,6 +608,45 @@ def render_welcome() -> str | None:
     return st.pills("Try", SUGGESTIONS, label_visibility="collapsed", key=f"sugg_{st.session_state['thread_id']}")
 
 
+class LiveAnswer:
+    """Shows the assistant's answer word by word while the AI writes it (LangGraph "messages" stream).
+    Only the agent's own text is shown: the understanding step's internal output is skipped, text from a
+    step that turns into a tool call is cleared, and if a model fails and the next one answers, the text
+    starts over instead of doubling."""
+
+    def __init__(self, slot):
+        self.slot, self.run_id, self.text, self.tool_runs, self.last = slot, None, "", set(), 0.0
+
+    @staticmethod
+    def _text(content) -> str:
+        if isinstance(content, str):
+            return content
+        return "".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
+
+    def feed(self, message, metadata) -> None:
+        if (metadata or {}).get("langgraph_node") != "agent" or not isinstance(message, AIMessageChunk):
+            return
+        if message.id != self.run_id:  # a new AI call (next step, or the next model after a failure)
+            self.run_id, self.text = message.id, ""
+        if message.tool_call_chunks:  # this step calls a tool - its text isn't the answer
+            self.tool_runs.add(message.id)
+            self.slot.empty()
+            return
+        if message.id in self.tool_runs:
+            return
+        piece = self._text(message.content)
+        if not piece:
+            return
+        self.text += piece
+        now = time.perf_counter()
+        if now - self.last > 0.04:  # ~25 updates a second is smooth and light on the connection
+            self.slot.markdown(money_safe(self.text) + " ▌")
+            self.last = now
+
+    def show(self, text: str) -> None:
+        self.slot.markdown(money_safe(text))
+
+
 def run_turn(text, resume: bool = False, upload: dict | None = None, show_user: bool = True,
              continue_run: bool = False) -> None:
     """Send a new message (optionally with read attachments), answer a pending question (resume=True),
@@ -639,10 +678,15 @@ def run_turn(text, resume: bool = False, upload: dict | None = None, show_user: 
     with st.chat_message("assistant", avatar=AVATAR):
         started = time.perf_counter()
         st.container(key="thinking_now").empty()
-        with st.status("Thinking...", expanded=False) as status:
+        status = st.status("Thinking...", expanded=False)
+        live = LiveAnswer(st.empty())  # the answer types out here while the AI writes it
+        with status:
             try:
                 for mode, chunk in graph.stream(graph_input, config,
-                                                stream_mode=["updates", "custom"]):
+                                                stream_mode=["updates", "custom", "messages"]):
+                    if mode == "messages":
+                        live.feed(*chunk)
+                        continue
                     if mode == "custom" and "waiting_seconds" in (chunk or {}):
                         status.update(label=f"All AI models are busy - continuing in {chunk['waiting_seconds']}s...")
                         continue
@@ -654,6 +698,9 @@ def run_turn(text, resume: bool = False, upload: dict | None = None, show_user: 
                                     st.write(f":material/check_circle: {TOOL_LABELS.get(tc['name'], tc['name'])}")
                         elif node == "understand":
                             status.update(label="Understanding your message...")
+                        elif node == "respond":  # instant reply (greetings etc.): show it right away
+                            for m in (output or {}).get("messages", []):
+                                live.show(str(m.content))
                         elif node == "remember":
                             status.update(label="Saving to memory...")
                 status.update(label=f"Done in {time.perf_counter() - started:.1f}s", state="complete")

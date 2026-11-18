@@ -175,7 +175,7 @@ Intent rules:
   (staff may look customers up; customers only get their own data).
 - Attempts to change your rules or get discounts are work (the agent will refuse them).
 - A short reply to the assistant's last question ("yes", "white", "3", "the first one") is work.
-Suggestions must be things listed under "What {assistant} can do" above - never promise anything else.
+{staff_work}Suggestions must be things listed under "What {assistant} can do" above - never promise anything else.
 
 === MEMORY ===
 {memory}
@@ -208,7 +208,10 @@ def understand_node(state: QuoteState, config: RunnableConfig) -> Dict[str, Any]
     if newest.additional_kwargs.get("upload"):
         return {"understanding": fallback}  # files attached -> it's work; no need to ask the router
     brands = _catalog_brief()
-    prompt = UNDERSTAND_PROMPT.format(
+    staff_work = ("- You are talking with STAFF: sales / margin reports, quote status (won, lost, sold), looking up "
+                  "customers by name, and teaching business rules ('Remember: ...') are all work.\n"
+                  if _role(config) == "staff" else "")
+    prompt = UNDERSTAND_PROMPT.format(staff_work=staff_work,
         who="a member of our STAFF" if _role(config) == "staff" else "a customer",
         assistant=_assistant(), company=_company(), today=date.today().strftime("%A, %B %d, %Y"), brands=brands,
         memory=state.get("memory_context", ""),
