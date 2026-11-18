@@ -203,24 +203,22 @@ class EngineTest(unittest.TestCase):
         q, _, _ = self.price([cab], [{"color": color, "sqft": 30}], shipping=True, installation=True)
         self.assertEqual(q["totals"]["tax"], 0.0)  # installed items are not taxed
 
-    def test_installation_price_and_time(self):
-        from catalog.pricing import rules
-
-        floor = self.cat._q("select sku from items where category='flooring' and json_extract(extra,'$.sqft_per_unit') "
-                            "is not null limit 1")[0]["sku"]
-        items = [self.item("W2136", "HCC", "Colonial White", 3), self.item(floor, "PELICAN", qty=2)]
-        q, p, _ = self.price(items, installation=True)
+    def test_installation_from_products(self):
+        items = [self.item("W2136", "HCC", "Colonial White", 3)]
+        q, p, _ = self.price(items, installation=True)  # RTA -> on-site assembly + installation
         self.assertEqual(p, [])
-        r = rules()["installation"]["rates"]
-        inst = {l["category"]: l for l in q["installation"]["lines"]}
-        self.assertAlmostEqual(inst["cabinet"]["amount"], 3 * r["cabinet"]["price"], places=2)
-        per = self.cat.lookup(floor, "PELICAN").items[0]["extra"]["sqft_per_unit"]
-        self.assertAlmostEqual(inst["flooring"]["quantity"], round(2 * per, 2), places=2)
-        hours = (3 * r["cabinet"]["minutes"] + 2 * per * r["flooring"]["minutes"]) / 60
-        self.assertAlmostEqual(q["installation"]["hours"], round(hours, 1), places=1)
-        self.assertGreaterEqual(q["installation"]["days"], 1)
-        q2, _, _ = self.price(items, installation=False)
-        self.assertIsNone(q2["installation"])
+        svc = {s["code"]: s for s in self.cat.install_services()}
+        inst = {l["code"]: l for l in q["installation"]["lines"]}
+        base = "cabinet-installation-base-upper-cabinet"
+        self.assertAlmostEqual(inst[base]["amount"], float(svc[base]["price"] * 3), places=2)
+        self.assertIn("cabinet-assembly-base-upper-cabinet", inst)
+        self.assertIn("minimum", inst)  # under $750 -> topped up to the sheet's minimum
+        self.assertAlmostEqual(q["installation"]["total"], 750.0, places=2)
+        q2, _, _ = self.price(items, assembled=True, installation=True)  # ordered assembled -> no on-site assembly
+        self.assertNotIn("cabinet-assembly-base-upper-cabinet", {l["code"] for l in q2["installation"]["lines"]})
+        q3, _, _ = self.price(items, installation=False)
+        self.assertIsNone(q3["installation"])
+
 
     def test_find_by_size(self):
         exact, near = self.cat.find_by_size("wall", 30, 36, None, "HCC", ["colonial-white"])
@@ -393,3 +391,113 @@ class RevisionChainTest(unittest.TestCase):
               {"quote_number": "HQ-3", "created_at": "3"},
               {"quote_number": "HQ-4", "created_at": "4", "revises": "HQ-3"}]
         self.assertEqual(sorted(q["quote_number"] for q in _latest_quotes(qs)), ["HQ-1", "HQ-4"])
+
+
+
+@unittest.skipUnless(SOURCES.exists(), "client price files not present (cabinates/ is not in git)")
+class InstallSheetTest(unittest.TestCase):
+    """The owner's install workbook: our engine must reproduce the sheet's own example totals."""
+
+    @classmethod
+    def setUpClass(cls):
+        import openpyxl
+
+        from catalog.store import get_catalog
+
+        cls.cat = get_catalog()
+        cls.wb = openpyxl.load_workbook(SOURCES / "INSTALL" / "Install Price_Time_Pay Sheet.xlsx", data_only=True)
+
+    def sheet_order(self, tab, group):
+        from catalog.normalize import match_key
+
+        ws = self.wb[tab]
+        by_name = {(s["section"], match_key(s["name"])): s for s in self.cat.install_services(group)}
+        section, chosen = "", []
+        for r in range(8, 39):
+            a, b, c = ws[f"A{r}"].value, ws[f"B{r}"].value, ws[f"C{r}"].value
+            if isinstance(a, str) and not b:
+                section = {"demo": "demo", "assembly": "assembly", "installation": "installation",
+                           "install": "installation"}.get(a.strip().lower(), section)
+                continue
+            if b and isinstance(c, (int, float)) and c:
+                sec = "fees" if any(k in b.lower() for k in ("hotel", "2nd floor", "trip fee")) else section
+                chosen.append({"code": by_name[(sec, match_key(b))]["code"], "quantity": c})
+        return chosen
+
+    def price(self, **kw):
+        from catalog.quote_engine import price_quote
+
+        return price_quote(self.cat, kw.pop("items", []), [], kw.pop("assembled", False), False, None, True, **kw)
+
+    def test_cabinet_example_matches_sheet(self):
+        q, p, _ = self.price(install_services=self.sheet_order("Cabinet Install Price Sheet", "cabinet"))
+        self.assertEqual(p, [])
+        self.assertAlmostEqual(q["installation"]["total"], float(self.wb["Cabinet Install Price Sheet"]["D39"].value), places=2)
+        self.assertAlmostEqual(q["installation"]["cost"], float(self.wb["Cabinet Install Pay Sheet"]["D39"].value), places=2)
+
+    def test_flooring_example_matches_sheet(self):
+        q, p, _ = self.price(install_services=self.sheet_order("Flooring Install Price Sheet", "flooring"))
+        self.assertEqual(p, [])
+        self.assertAlmostEqual(q["installation"]["total"], float(self.wb["Flooring Install Price Sheet"]["D39"].value), places=2)
+
+    def test_rules(self):
+        tile = self.cat._q("select id, sku from items where category='tile' limit 1")[0]
+        _, p, _ = self.price(items=[{"item_id": tile["id"], "code": tile["sku"], "quantity": 10}])
+        self.assertTrue(p and "install type" in p[0])
+        small = "flooring-installation-floor-tile-install-small-format-tile-4"
+        q, p, _ = self.price(items=[{"item_id": tile["id"], "code": tile["sku"], "quantity": 10}],
+                             install_services=[{"code": small, "quantity": 10}])
+        self.assertEqual(p, [])
+        self.assertEqual(q["totals"]["tax"], 0.0)  # the tile is installed by us -> not taxed
+        cab = self.sheet_order("Cabinet Install Price Sheet", "cabinet")
+        _, p, _ = self.price(install_services=cab, install_discount_percent=20)
+        self.assertTrue(p and "Chase" in p[0])
+        q, p, _ = self.price(install_services=cab, install_discount_percent=10)
+        self.assertEqual(p, [])
+        self.assertAlmostEqual(q["installation"]["total"],
+                               round(float(self.wb["Cabinet Install Price Sheet"]["D39"].value) * 0.9, 2), places=2)
+        quoted = next(s for s in self.cat.install_services() if s["quoted"])
+        _, p, _ = self.price(install_services=[{"code": quoted["code"], "quantity": 1}])
+        self.assertTrue(p and "quoted by the job" in p[0])
+
+    def test_import_reported_sheet_inconsistencies(self):
+        kinds = {r["kind"] for r in self.cat._q("select kind from issues where business_id='INSTALL'")}
+        self.assertIn("time_formula_mismatch", kinds)
+        pay = [s for s in self.cat.install_services() if s["price"] and s["pay"] and s["pay"] > s["price"]]
+        self.assertEqual(pay, [])  # installer pay never above the customer price
+
+
+@unittest.skipUnless(SOURCES.exists(), "client price files not present (cabinates/ is not in git)")
+class FlooringInstallAreaTest(unittest.TestCase):
+    def test_area_overrides_box_coverage_and_no_double_count(self):
+        from catalog.quote_engine import price_quote
+        from catalog.store import get_catalog
+
+        cat = get_catalog()
+        floor = cat.lookup("Acorn 20mil Dryback Planks", "PELICAN").items[0]
+        code = "flooring-installation-laminate-vinyl-plank-flooring-sqft"
+        items = [{"item_id": floor["id"], "code": floor["sku"], "quantity": 10}]
+        q, p, _ = price_quote(cat, items, [], False, False, None, True, [{"code": code, "quantity": 400}])
+        self.assertEqual(p, [])
+        line = next(l for l in q["installation"]["lines"] if l["code"] == code)
+        self.assertEqual(line["quantity"], 400.0)  # the floor area, not 10 boxes x coverage, and not both
+        q2, _, _ = price_quote(cat, items, [], False, False, None, True)
+        line2 = next(l for l in q2["installation"]["lines"] if l["code"] == code)
+        self.assertAlmostEqual(line2["quantity"], round(10 * floor["extra"]["sqft_per_unit"], 2), places=2)
+
+
+@unittest.skipUnless(SOURCES.exists(), "client price files not present (cabinates/ is not in git)")
+class QuoteSerializableTest(unittest.TestCase):
+    def test_priced_quote_is_plain_json(self):
+        import json
+
+        from catalog.quote_engine import price_quote
+        from catalog.store import get_catalog
+
+        cat = get_catalog()
+        floor = cat.lookup("Acorn 20mil Dryback Planks", "PELICAN").items[0]
+        q, p, _ = price_quote(cat, [{"item_id": floor["id"], "code": floor["sku"], "quantity": 10}], [], False, False,
+                              None, True, [{"code": "flooring-installation-laminate-vinyl-plank-flooring-sqft",
+                                            "quantity": 400}])
+        self.assertEqual(p, [])
+        json.dumps(q)  # no Decimal left anywhere (the store saves quotes as JSON)

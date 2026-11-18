@@ -217,6 +217,12 @@
       "importer": "zsolt",
       "source": "cabinates/Zsolt/Zsolt.xlsx",
       "colors_pdf": "cabinates/Zsolt/SQFT Program Brochure (2).pdf"
+    },
+    "INSTALL": {
+      "name": "Installation (our crews)",
+      "kind": "Cabinet and flooring installation, demo, assembly - price, time and installer pay per unit",
+      "importer": "install",
+      "source": "cabinates/INSTALL/Install Price_Time_Pay Sheet.xlsx"
     }
   },
   "pending_businesses": [

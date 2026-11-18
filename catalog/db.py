@@ -68,6 +68,10 @@ CREATE TABLE aliases (
     kind TEXT, confirmed INTEGER, note TEXT
 );
 CREATE INDEX aliases_key ON aliases (alias_key);
+CREATE TABLE install_services (
+    code TEXT PRIMARY KEY, grp TEXT NOT NULL, section TEXT, name TEXT NOT NULL, price_cents INTEGER, unit TEXT,
+    minutes REAL, pay_cents INTEGER, quoted INTEGER, note TEXT, source_ref TEXT
+);
 CREATE TABLE excluded_items (
     business_id TEXT, line_id TEXT, sku TEXT, description TEXT, reason TEXT, source_ref TEXT
 );
@@ -148,6 +152,9 @@ def _write_business(con: sqlite3.Connection, res: ImportResult) -> None:
     con.executemany("INSERT INTO aliases VALUES (?, ?, ?, ?, ?, ?, ?)",
                     [(a.alias, match_key(a.alias), a.business, a.target_code, a.kind, int(a.confirmed), a.note)
                      for a in res.aliases])
+    con.executemany("INSERT INTO install_services VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [(s.code, s.group, s.section, s.name, cents(s.price), s.unit, s.minutes, cents(s.pay), int(s.quoted),
+                      s.note, s.source_ref) for s in res.install_services])
     con.executemany("INSERT INTO issues VALUES (?, ?, ?, ?, ?)",
                     [(i.business, i.severity, i.kind, i.message, i.ref) for i in res.issues])
     con.executemany("INSERT INTO checks VALUES (?, ?, ?, ?, ?)",

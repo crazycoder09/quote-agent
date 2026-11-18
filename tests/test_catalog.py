@@ -118,7 +118,8 @@ class BuildTest(unittest.TestCase):
 
     def test_every_business_loaded(self):
         ids = {r["id"] for r in self.q("select id from businesses")}
-        self.assertEqual(ids, {"HCC", "KCD", "PELICAN", "ZSOLT"})
+        self.assertEqual(ids, {"HCC", "KCD", "PELICAN", "ZSOLT", "INSTALL"})
+        self.assertGreater(self.q("select count(*) n from install_services")[0]["n"], 40)
         for bid in ("HCC", "KCD", "PELICAN"):
             self.assertGreater(self.q("select count(*) n from items where business_id=? and quotable=1", bid)[0]["n"], 0)
         self.assertGreater(self.q("select count(*) n from material_groups")[0]["n"], 0)

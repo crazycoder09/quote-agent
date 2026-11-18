@@ -1,6 +1,5 @@
 {
   "_help": "Owner's pricing rules. Every supplier price in the catalog is the WHOLESALE COST to us; the customer price = cost x (1 + markup%). Values marked confirmed=false are placeholders until the owner sends the real ones - change them here, no code change, the app picks them up immediately.",
-
   "markup": {
     "confirmed": false,
     "default_percent": 35,
@@ -12,42 +11,223 @@
     },
     "_help": "Markup on wholesale cost per business (customer price = cost x (1 + percent/100)). Applies to products, supplier assembly fees, countertop material and countertop services. PLACEHOLDER 35% until the owner confirms."
   },
-
   "sales_tax": {
     "rate_percent": 7,
-    "taxable_categories": ["cabinet", "filler_panel_molding", "cabinet_accessory", "hood", "hardware", "shelf",
-                           "kitchen_sink", "bathroom_sink", "sink_accessory", "faucet", "bathtub", "toilet", "shower",
-                           "vanity_top", "bath_accessory", "flooring", "flooring_trim", "tile", "quartz_slab", "part",
-                           "sample"],
+    "taxable_categories": [
+      "cabinet",
+      "filler_panel_molding",
+      "cabinet_accessory",
+      "hood",
+      "hardware",
+      "shelf",
+      "kitchen_sink",
+      "bathroom_sink",
+      "sink_accessory",
+      "faucet",
+      "bathtub",
+      "toilet",
+      "shower",
+      "vanity_top",
+      "bath_accessory",
+      "flooring",
+      "flooring_trim",
+      "tile",
+      "quartz_slab",
+      "part",
+      "sample"
+    ],
     "not_taxed": "Countertops (fabricated + installed), installation, assembly, delivery, modifications (services).",
     "installed_items_exempt": true,
     "_help": "7% on products (cabinets, sinks, faucets, handles ... per the owner). No tax on countertops. When the quote includes installation, the installed items are not taxed."
   },
-
   "installation": {
-    "confirmed": false,
-    "crew_hours_per_day": 8,
-    "rates": {
-      "cabinet":              {"price": 100.00, "per": "each", "minutes": 60,  "label": "Cabinet installation"},
-      "filler_panel_molding": {"price": 25.00,  "per": "each", "minutes": 15,  "label": "Fillers, panels & molding"},
-      "cabinet_accessory":    {"price": 25.00,  "per": "each", "minutes": 15,  "label": "Cabinet accessories"},
-      "shelf":                {"price": 25.00,  "per": "each", "minutes": 20,  "label": "Floating shelves"},
-      "hardware":             {"price": 5.00,   "per": "each", "minutes": 5,   "label": "Handles & knobs"},
-      "hood":                 {"price": 150.00, "per": "each", "minutes": 120, "label": "Range hood"},
-      "kitchen_sink":         {"price": 150.00, "per": "each", "minutes": 90,  "label": "Kitchen sink"},
-      "bathroom_sink":        {"price": 100.00, "per": "each", "minutes": 60,  "label": "Bathroom sink"},
-      "faucet":               {"price": 75.00,  "per": "each", "minutes": 45,  "label": "Faucet"},
-      "toilet":               {"price": 125.00, "per": "each", "minutes": 90,  "label": "Toilet"},
-      "vanity_top":           {"price": 75.00,  "per": "each", "minutes": 45,  "label": "Vanity top"},
-      "flooring":             {"price": 2.50,   "per": "sqft", "minutes": 2,   "label": "Flooring installation"},
-      "tile":                 {"price": 8.00,   "per": "sqft", "minutes": 8,   "label": "Tile installation"}
+    "confirmed": true,
+    "source": "Owner's install workbook (cabinates/INSTALL/Install Price_Time_Pay Sheet.xlsx), imported into the catalog with python scripts/build_catalog.py - price, time and installer pay per service",
+    "hours_per_day": 8,
+    "minimum_per_job": 750,
+    "max_discount_percent_without_approval": 15,
+    "approver": "Chase",
+    "auto": [
+      {
+        "category": "cabinet",
+        "cabinet_type": [
+          "tall",
+          "oven"
+        ],
+        "service": "cabinet-installation-pantry-linen-hood-oven-cabinets",
+        "assembly_if_rta": "cabinet-assembly-pantry-linen-hood-oven-cabinets"
+      },
+      {
+        "category": "cabinet",
+        "service": "cabinet-installation-base-upper-cabinet",
+        "assembly_if_rta": "cabinet-assembly-base-upper-cabinet"
+      },
+      {
+        "category": "hood",
+        "service": "cabinet-installation-pantry-linen-hood-oven-cabinets"
+      },
+      {
+        "category": "hardware",
+        "service": "cabinet-installation-cabinet-drawer-hardware"
+      },
+      {
+        "category": "shelf",
+        "service": "cabinet-installation-floating-shelf-valance-corbels-legs"
+      },
+      {
+        "category": "cabinet_accessory",
+        "keywords": [
+          "trash",
+          "waste",
+          "roll out",
+          "rollout",
+          "roll-out",
+          "tray",
+          "spice",
+          "lazy susan",
+          "pull out",
+          "pullout",
+          "organizer",
+          "hamper",
+          "insert"
+        ],
+        "service": "cabinet-installation-trash-cans-roll-out-trays-spice-racks-l"
+      },
+      {
+        "category": "filler_panel_molding",
+        "keywords": [
+          "dishwasher",
+          "refrigerator panel",
+          "fridge panel",
+          "dwep",
+          "refrigerator end"
+        ],
+        "service": "cabinet-installation-dishwasher-refrigerator-panels"
+      },
+      {
+        "category": "filler_panel_molding",
+        "keywords": [
+          "toe kick",
+          "toekick",
+          "tk8"
+        ],
+        "service": "cabinet-installation-toekick-1-per-8-piece"
+      },
+      {
+        "category": "filler_panel_molding",
+        "keywords": [
+          "crown",
+          "light rail",
+          "baseboard",
+          "base board",
+          "lrm",
+          "cm8"
+        ],
+        "service": "cabinet-installation-crown-base-board-light-rail-etc-1-per-8"
+      },
+      {
+        "category": "filler_panel_molding",
+        "keywords": [
+          "scribe",
+          "outside corner",
+          "inside corner",
+          "shoe",
+          "quarter round",
+          "batten",
+          "oc8",
+          "sm8",
+          "qr8",
+          "icm"
+        ],
+        "service": "cabinet-installation-scribe-outside-coner-shoe-moulding-etc"
+      },
+      {
+        "category": "filler_panel_molding",
+        "keywords": [
+          "back panel",
+          "bp48",
+          "4x8",
+          "bead board",
+          "beadboard",
+          "shiplap"
+        ],
+        "service": "cabinet-installation-4x8-back-panels-per-location"
+      },
+      {
+        "category": "filler_panel_molding",
+        "keywords": [
+          "end panel",
+          "skin",
+          "bsk",
+          "wsk",
+          "bep",
+          "wep",
+          "wall panel",
+          "dwp"
+        ],
+        "service": "cabinet-installation-decorative-end-panels-skins-per-locatio"
+      },
+      {
+        "category": "filler_panel_molding",
+        "keywords": [
+          "filler",
+          "overlay"
+        ],
+        "service": "cabinet-installation-filler-overlay-per-location"
+      },
+      {
+        "category": "filler_panel_molding",
+        "keywords": [
+          "valance",
+          "corbel",
+          "leg"
+        ],
+        "service": "cabinet-installation-floating-shelf-valance-corbels-legs"
+      },
+      {
+        "category": "flooring",
+        "keywords": [
+          "hardwood",
+          "engineered"
+        ],
+        "service": "flooring-installation-engineered-hardwood-per-sqft",
+        "per_sqft": true
+      },
+      {
+        "category": "flooring",
+        "service": "flooring-installation-laminate-vinyl-plank-flooring-sqft",
+        "per_sqft": true
+      },
+      {
+        "category": "toilet",
+        "keywords": [
+          "toilet"
+        ],
+        "service": "flooring-demo-toilet-removal-install-includes-wax-ring"
+      }
+    ],
+    "needs_choice": {
+      "tile": "Tile needs an install type: floor tile (small format / large format 24x48 / plank tile), backsplash, or wall & shower tile (quoted by the job) - ask, then add that service with install_services."
     },
-    "_help": "PLACEHOLDER install price sheet (price per unit + labor minutes per unit, used for the time estimate). Replace with the owner's install price sheet. Countertops are already fabricated + installed in their price. Categories not listed here are not installed by us."
+    "not_installed_by_us": [
+      "kitchen_sink",
+      "bathroom_sink",
+      "faucet",
+      "sink_accessory",
+      "bathtub",
+      "shower",
+      "vanity_top",
+      "quartz_slab",
+      "bath_accessory"
+    ],
+    "_help": "Products are mapped to install services automatically (first matching rule; keywords are searched in the product code + description). RTA cabinets (assembled=false) also get the installer's assembly line. Demo / removal, haul away, dumpster, 2nd floor, hotel / trip fees, backsplash, tile, trims per linear foot, stairs, grout and mortar are added by the assistant with install_services after asking the customer. Categories in not_installed_by_us are not on the install sheet (the customer's plumber / installer) - they stay taxable."
   },
-
   "flooring": {
     "waste_percent": 10,
-    "categories": ["flooring", "tile"],
+    "categories": [
+      "flooring",
+      "tile"
+    ],
     "_help": "Ask whether the customer's area already includes waste; if not, recommend adding this percent."
   }
 }

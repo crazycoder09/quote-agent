@@ -80,12 +80,27 @@ def is_taxable(category: str, installed: bool) -> bool:
     return category in set(t.get("taxable_categories", []))
 
 
-def install_rate(category: str) -> Optional[Dict[str, Any]]:
-    return (rules().get("installation", {}).get("rates") or {}).get(category)
+def install_rules() -> Dict[str, Any]:
+    return rules().get("installation", {})
 
 
-def crew_hours_per_day() -> Decimal:
-    return Decimal(str(rules().get("installation", {}).get("crew_hours_per_day", 8)))
+def auto_install(category: str, cabinet_type: Optional[str], text: str) -> Optional[Dict[str, Any]]:
+    """The install-sheet rule for a product (first match: category, cabinet type, keywords in code +
+    description), or None when we don't install it."""
+    t = (text or "").lower()
+    for rule in install_rules().get("auto", []):
+        if rule.get("category") != category:
+            continue
+        if rule.get("cabinet_type") and (cabinet_type or "") not in rule["cabinet_type"]:
+            continue
+        if rule.get("keywords") and not any(k in t for k in rule["keywords"]):
+            continue
+        return rule
+    return None
+
+
+def hours_per_day() -> Decimal:
+    return Decimal(str(install_rules().get("hours_per_day", 8)))
 
 
 def waste_percent() -> Decimal:

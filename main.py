@@ -256,7 +256,8 @@ def render_sidebar() -> None:
             cat = get_catalog()
             built = cat.meta.get("built_at", "")[:16].replace("T", " ")
             for b in cat.status():
-                detail = f"{b['items']:,} items" if b["items"] else f"{b['colors']} colors"
+                detail = (f"{b['items']:,} items" if b["items"] else f"{b['services']} services" if b.get("services")
+                          else f"{b['colors']} colors")
                 pills.append(f'<div class="status-pill"><span class="led ok"></span>'
                              f'<span class="k">{b["id"]}</span><span>{detail}</span></div>')
             pills.append(f'<div class="status-pill"><span class="led ok"></span><span class="k">Prices</span>'
@@ -414,7 +415,9 @@ def render_quote_card(quote_number: str) -> None:
         inst = q.get("installation")
         if inst:
             st.markdown("**Installation**" + (" (estimate)" if inst.get("estimate") else ""))
-            rows = [{"Item": l["label"], "Qty": f"{l['quantity']:g} {'sq ft' if l['unit'] == 'sqft' else ''}".strip(),
+            from agent.quote_document import UNIT_LABELS
+
+            rows = [{"Item": l["label"], "Qty": f"{l['quantity']:g} {UNIT_LABELS.get(l['unit'], l['unit'])}",
                      "Unit price": l["rate"], "Total": l["amount"]} for l in inst["lines"]]
             st.dataframe(rows, hide_index=True, width="stretch", column_config=money_cols)
             st.caption(f"Installation total **\\${inst['total']:,.2f}** · estimated time about "

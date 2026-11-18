@@ -323,6 +323,22 @@ class Catalog:
                            "where c.name_key like ? limit 10", (f"%{key}%",))
         return [{**dict(r), "rate": _cents(r["rate_per_sqft_cents"])} for r in rows]
 
+    def install_services(self, group: Optional[str] = None) -> List[Dict[str, Any]]:
+        sql, params = "select * from install_services", []
+        if group:
+            sql += " where grp=?"
+            params = [group]
+        try:
+            rows = self._q(sql + " order by rowid", params)
+        except sqlite3.OperationalError:  # catalog built before the install sheet was added
+            return []
+        return [{**dict(r), "group": r["grp"], "price": _cents(r["price_cents"]), "pay": _cents(r["pay_cents"])}
+                for r in rows]
+
+    def install_service(self, code: str) -> Optional[Dict[str, Any]]:
+        key = match_key(code)
+        return next((s for s in self.install_services() if match_key(s["code"]) == key), None)
+
     def colors_in_group(self, group_id: str) -> List[str]:
         return [r["name"] for r in self._q("select name from colors where group_id=? order by name", (group_id,))]
 
@@ -376,7 +392,9 @@ class Catalog:
     def status(self) -> List[Dict[str, Any]]:
         counts = {r["business_id"]: r["n"] for r in self._q("select business_id, count(*) n from items where quotable=1 group by 1")}
         colors = {r["business_id"]: r["n"] for r in self._q("select business_id, count(*) n from colors group by 1")}
-        return [{"id": bid, "name": b["name"], "items": counts.get(bid, 0), "colors": colors.get(bid, 0)}
+        services = len(self.install_services())
+        return [{"id": bid, "name": b["name"], "items": counts.get(bid, 0), "colors": colors.get(bid, 0),
+                 "services": services if b["pricing"].get("basis") == "install_sheet" else 0}
                 for bid, b in self.businesses.items()]
 
 

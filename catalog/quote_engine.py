@@ -10,7 +10,9 @@ catalog and the owner's rules (config/pricing.json):
                        PELICAN quantity-break dealer price      countertops sq ft x group rate (+ services)
     customer price   cost x (1 + markup% of that business)
     assembly         supplier rule on cost (HCC % of the section, KCD per item + pick-up extra), marked up
-    installation     install price sheet: price + labor time per unit (cabinets each, flooring/tile per sq ft)
+    installation     the owner's install sheet (catalog table install_services): products map to services
+                     automatically (config/pricing.json installation.auto), the assistant adds demo / fees /
+                     tile / backsplash / trims; $750 minimum per job type; installer pay = installation cost
     sales tax        rate x taxable product lines (no tax on countertops, services, or items we install)
     margin           customer price - wholesale cost (products, assembly, countertops) - for staff reports only
 
@@ -27,7 +29,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from catalog.normalize import match_key, money
-from catalog.pricing import (crew_hours_per_day, install_rate, is_taxable, markup_percent, sell, tax_rate,
+from catalog.pricing import (auto_install, hours_per_day, install_rules, is_taxable, markup_percent, sell, tax_rate,
                              unconfirmed)
 from catalog.store import Catalog
 
@@ -54,9 +56,30 @@ def _code_matches(cat: Catalog, item: Dict[str, Any], code: str) -> bool:
 
 def price_quote(cat: Catalog, items: List[Dict[str, Any]], countertops: List[Dict[str, Any]], assembled: bool,
                 shipping: bool, extras: Optional[List[Dict[str, Any]]] = None,
-                installation: bool = False) -> Tuple[Dict[str, Any], List[str], List[str]]:
+                installation: bool = False, install_services: Optional[List[Dict[str, Any]]] = None,
+                install_discount_percent: float = 0, install_discount_approved: bool = False,
+                ) -> Tuple[Dict[str, Any], List[str], List[str]]:
     problems: List[str] = []
     warnings: List[str] = []
+    rules_ = install_rules()
+    # services the assistant chose (demo, fees, tile / backsplash, trims ...), checked against the install sheet
+    chosen = []
+    for raw in install_services or []:
+        svc = cat.install_service(str(raw.get("code") or ""))
+        qty = Decimal(str(raw.get("quantity") or 0))
+        if svc is None:
+            problems.append(f"Install service '{raw.get('code')}' not found - use a code from install_options")
+            continue
+        if svc["quoted"] or svc["price"] is None:
+            problems.append(f"'{svc['name']}' is quoted by the job - leave it out and add it to unpriced_items")
+            continue
+        if qty <= 0:
+            problems.append(f"'{svc['name']}': quantity must be more than 0")
+            continue
+        chosen.append((svc, qty))
+    chosen_codes = {svc["code"] for svc, _ in chosen}
+    tile_service = any(re.search(r"tile|backsplash", s_["name"], re.I) and s_["section"] == "installation"
+                       for s_, _ in chosen)
 
     # Same item twice -> one line (quantity breaks depend on the total quantity)
     merged: "OrderedDict[Tuple[int, str], Dict[str, Any]]" = OrderedDict()
@@ -101,7 +124,15 @@ def price_quote(cat: Catalog, items: List[Dict[str, Any]], countertops: List[Dic
         line = item["line_name"]
         if line and line not in sec["lines"]:
             sec["lines"].append(line)
-        installed = bool(installation and install_rate(item["category"]))
+        rule = auto_install(item["category"], item.get("cabinet_type"), f"{item['sku']} {item['description']}") \
+            if installation else None
+        installed = bool(rule) or bool(installation and item["category"] == "tile" and tile_service)
+        if installation and not installed:
+            if item["category"] in (rules_.get("needs_choice") or {}):
+                problems.append(rules_["needs_choice"][item["category"]])
+            elif item["category"] in rules_.get("not_installed_by_us", []):
+                warnings.append(f"{item['sku']} ({item['description'][:40]}) is not on the install sheet - the "
+                                "customer's plumber / installer installs it (it stays taxable)")
         sec["items"].append({
             "item_id": item["id"], "sku": item["sku"], "code": item["code"],
             "requested_as": code if code and match_key(code) not in (item["code_key"], item["sku_key"]) else None,
@@ -112,11 +143,12 @@ def price_quote(cat: Catalog, items: List[Dict[str, Any]], countertops: List[Dic
             "installed": installed, "taxable": is_taxable(item["category"], installed),
             "sqft_per_unit": item["extra"].get("sqft_per_unit"),
             "note": (raw.get("note") or "").strip() or None,
-            "_assembly": item["assembly_price"], "_tiers": bool(item["tiers"]),
+            "_assembly": item["assembly_price"], "_tiers": bool(item["tiers"]), "_install": rule,
         })
 
     rate = tax_rate()
-    out_sections, install_lines = [], OrderedDict()
+    out_sections = []
+    install_units: "OrderedDict[str, Decimal]" = OrderedDict()  # install service code -> units
     for bid, sec in sections.items():
         if not sec:
             continue
@@ -141,18 +173,19 @@ def price_quote(cat: Catalog, items: List[Dict[str, Any]], countertops: List[Dic
             if i.pop("_tiers") and i["quantity"] > 1:
                 i["note"] = "; ".join(x for x in (i["note"], "quantity price") if x)
             i.pop("_assembly")
-            if i["installed"]:  # what installation covers, per category of the install price sheet
-                r = install_rate(i["category"])
-                key = i["category"]
+            r = i.pop("_install")
+            # the floor AREA given in install_services is what gets installed (not the box coverage)
+            if r and r.get("per_sqft") and r["service"] in chosen_codes:
+                r = None
+            if r:  # this product is installed by our crews -> its line on the install sheet
                 units = Decimal(str(i["quantity"]))
-                if r.get("per") == "sqft":
+                if r.get("per_sqft"):
                     if not i["sqft_per_unit"]:
                         warnings.append(f"{i['sku']}: coverage per unit unknown - installation counted per piece")
                     units = units * Decimal(str(i["sqft_per_unit"] or 1))
-                row = install_lines.setdefault(key, {"category": key, "label": r.get("label", key), "per": r.get("per", "each"),
-                                                     "rate": Decimal(str(r["price"])), "quantity": ZERO, "minutes": ZERO})
-                row["quantity"] += units
-                row["minutes"] += units * Decimal(str(r.get("minutes", 0)))
+                install_units[r["service"]] = install_units.get(r["service"], ZERO) + units
+                if r.get("assembly_if_rta") and not assembled:  # RTA cabinets are assembled on site first
+                    install_units[r["assembly_if_rta"]] = install_units.get(r["assembly_if_rta"], ZERO) + Decimal(i["quantity"])
             for k in ("unit_price", "total", "unit_cost", "cost_total"):
                 i[k] = _f(i[k])
         out_sections.append({
@@ -166,22 +199,13 @@ def price_quote(cat: Catalog, items: List[Dict[str, Any]], countertops: List[Dic
 
     ct_section = _countertops(cat, countertops or [], problems)
 
-    installation_section = None
-    if installation and install_lines:
-        rows, total, minutes = [], ZERO, ZERO
-        for r in install_lines.values():
-            qty = r["quantity"].quantize(Decimal("0.01"))
-            amount = money(qty * r["rate"])
-            total += amount
-            minutes += r["minutes"]
-            rows.append({"category": r["category"], "label": r["label"], "quantity": float(qty), "unit": r["per"],
-                         "rate": _f(r["rate"]), "amount": _f(amount)})
-        hours = (minutes / 60).quantize(Decimal("0.1"))
-        days = max(1, math.ceil(hours / crew_hours_per_day())) if hours else 0
-        installation_section = {"lines": rows, "total": _f(total), "hours": float(hours), "days": days,
-                                "estimate": "installation rates" in unconfirmed()}
-    elif installation:
-        warnings.append("Installation was requested but nothing in the quote is installed by us")
+    for svc, qty in chosen:
+        if svc["code"] in install_units:  # already counted from the products (cabinets, hardware ...)
+            warnings.append(f"'{svc['name']}' is already counted from the products in the quote - not added twice")
+            continue
+        install_units[svc["code"]] = qty
+    installation_section = _installation(cat, install_units, installation, install_discount_percent,
+                                         install_discount_approved, problems, warnings)
 
     extra_rows = []
     for x in extras or []:
@@ -197,14 +221,18 @@ def price_quote(cat: Catalog, items: List[Dict[str, Any]], countertops: List[Dic
     tax = sum((D(s["tax"]) for s in out_sections), ZERO)
     products = items_subtotal + assembly + ct_total
     cost = sum((D(s["cost"]) for s in out_sections), ZERO) + (D(ct_section["cost"]) if ct_section else ZERO)
+    install_cost = D(installation_section["cost"]) if installation_section else ZERO
+    revenue = products + install_total
+    cost += install_cost
     totals = {"items_subtotal": _f(items_subtotal), "assembly_fee": _f(assembly), "countertops": _f(ct_total),
               "installation": _f(install_total), "extras_total": _f(extras_total),
               "tax": _f(tax), "tax_rate_percent": float(rate * 100),
               "grand_total": _f(products + install_total + extras_total + tax),
               # staff only (margin tracking / reports) - never shown to customers
-              "cost": _f(cost), "margin": _f(products - cost),
-              "margin_percent": round(float((products - cost) / products * 100), 1) if products else 0.0}
-    if not out_sections and not ct_section and not extra_rows and not problems:
+              "cost": _f(cost), "margin": _f(revenue - cost),
+              "margin_percent": round(float((revenue - cost) / revenue * 100), 1) if revenue else 0.0,
+              "installation_cost": _f(install_cost)}
+    if not out_sections and not ct_section and not extra_rows and not installation_section and not problems:
         problems.append("The quote has no items")
     pricing_snapshot = {"markup_percent": {s["business"]: s["markup_percent"] for s in out_sections},
                         "tax_rate_percent": float(rate * 100), "placeholders": unconfirmed()}
@@ -212,6 +240,70 @@ def price_quote(cat: Catalog, items: List[Dict[str, Any]], countertops: List[Dic
         pricing_snapshot["markup_percent"][ct_section["business"]] = float(markup_percent(ct_section["business"]))
     return ({"sections": out_sections, "countertops": ct_section, "installation": installation_section,
              "extras": extra_rows, "totals": totals, "pricing_snapshot": pricing_snapshot}, problems, warnings)
+
+
+def _installation(cat: Catalog, units: "OrderedDict[str, Decimal]", requested: bool, discount_percent: float,
+                  discount_approved: bool, problems: List[str], warnings: List[str]) -> Optional[Dict[str, Any]]:
+    """Install lines from the owner's sheet: price, labor time and installer pay per unit; discount (staff);
+    the sheet's minimum per job type (cabinet / flooring)."""
+    if not units:
+        if requested:
+            warnings.append("Installation was requested but nothing in the quote is installed by our crews")
+        return None
+    rules_ = install_rules()
+    discount = Decimal(str(discount_percent or 0))
+    limit = Decimal(str(rules_.get("max_discount_percent_without_approval", 15)))
+    if discount < 0 or discount > 100:
+        problems.append("Install discount must be between 0 and 100%")
+        discount = ZERO
+    elif discount > limit and not discount_approved:
+        problems.append(f"An install discount over {limit:g}% must be approved by {rules_.get('approver', 'the owner')} - "
+                        "set install_discount_approved=true only after that approval")
+    minimum = Decimal(str(rules_.get("minimum_per_job", 0)))
+    groups: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+    minutes = ZERO
+    for code, qty in units.items():
+        svc = cat.install_service(code)
+        if svc is None:
+            problems.append(f"Install sheet service '{code}' (config/pricing.json) is not in the catalog - rebuild it")
+            continue
+        qty = qty.quantize(Decimal("0.01"))
+        amount = money(qty * svc["price"])
+        pay = money(qty * (svc["pay"] or ZERO))
+        minutes += qty * Decimal(str(svc["minutes"] or 0))
+        g = groups.setdefault(svc["group"], {"lines": [], "subtotal": ZERO, "cost": ZERO})
+        label = svc["name"] if svc["section"] == "fees" else f"{svc['section'].title()}: {svc['name']}"
+        g["lines"].append({"code": code, "label": label, "section": svc["section"], "quantity": float(qty),
+                           "unit": svc["unit"], "rate": _f(svc["price"]), "amount": _f(amount)})
+        g["subtotal"] += amount
+        g["cost"] += pay
+    lines, total, cost = [], ZERO, ZERO
+    for name, g in groups.items():
+        sub = g["subtotal"]
+        if discount:
+            off = money(sub * discount / 100)
+            g["lines"].append({"code": "discount", "label": f"Install discount ({discount:g}%)", "section": "discount",
+                               "quantity": 1.0, "unit": "each", "rate": _f(-off), "amount": _f(-off)})
+            sub -= off
+        if minimum and ZERO < sub < minimum:  # "INSTALL $750 MINIMUM" on each sheet
+            top = minimum - sub
+            g["lines"].append({"code": "minimum", "label": f"{name.title()} installation minimum (${minimum:,.0f})",
+                               "section": "minimum", "quantity": 1.0, "unit": "each", "rate": _f(top), "amount": _f(top)})
+            sub = minimum
+        for line in g["lines"]:
+            line["group"] = name
+        lines += g["lines"]
+        total += sub
+        cost += g["cost"]
+    if not lines:
+        return None
+    hours = (minutes / 60).quantize(Decimal("0.1"))
+    per_day = hours_per_day()
+    days = max(1, math.ceil(hours / per_day)) if hours else 0
+    return {"lines": lines, "total": _f(total), "hours": float(hours), "days": days,
+            "days_exact": float((hours / per_day).quantize(Decimal("0.01"))) if hours else 0.0,
+            "cost": _f(cost), "discount_percent": float(discount), "estimate": False,
+            "note": "Prices may vary if additional prep work is necessary."}
 
 
 def m_name(matches: List[Dict[str, Any]]) -> str:

@@ -12,6 +12,7 @@ Catalog (all businesses: HCC, KCD, Pelican, countertops)
     countertop_options     countertop colors -> price group, rates, cutouts / edges / services
     find_by_size           "30-inch wide wall cabinet" -> real cabinets of that type and size (both brands)
     flooring_quantity      area (+10% waste unless included) -> boxes / sheets to order
+    install_options        the owner's install sheet: demo, assembly, installation, fees (price + time)
     show_line_images       sample door + finished kitchen photos of door styles (shown in the chat)
 Math
     calculator             exact arithmetic (quantities: sq ft, handles)
@@ -323,6 +324,42 @@ def flooring_quantity(item_id: int, area_sqft: float, area_includes_waste: bool)
                           "the waste allowance and how many " + unit + " that is."})
 
 
+UNIT_WORDS = {"each": "each", "sqft": "per sq ft", "lf": "per linear ft", "step": "per step", "location": "per location",
+              "piece_8ft": "per 8 ft piece", "section_8ft": "per 8 ft section", "night": "per night", "bag": "per bag",
+              "job": "per job", "trip": "per trip"}
+
+
+@tool
+def install_options(group: Optional[str] = None, config: RunnableConfig = None) -> str:
+    """The owner's INSTALLATION price sheet: every service with its code, price, unit and labor time.
+    group: cabinet | flooring (default both). Products in the quote are installed automatically when
+    installation=true; use these codes in create_quote(install_services=[...]) for what isn't a product:
+    demo / removal of existing cabinets, countertops or flooring, haul away, dumpster, 2nd floor, hotel /
+    trip fees, toilet removal, backsplash, floor tile type, 1/4 round / baseboards (per linear ft), stairs,
+    grout / mortar bags, on-site cabinet modifications (farm sink, oven, microwave cut-outs)."""
+    try:
+        cat = get_catalog()
+    except CatalogUnavailable as exc:
+        return _json({"error": str(exc)})
+    staff = _is_staff(config)
+    services = cat.install_services(group.strip().lower() if group else None)
+    if not services:
+        return "No install sheet in the catalog."
+    out, current = [], None
+    for s in services:
+        head = f"{s['grp'].upper()} - {s['section']}"
+        if head != current:
+            out.append(f"{head}:")
+            current = head
+        price = "quoted by the job (designer)" if s["quoted"] else f"{fmt_money(s['price'])} {UNIT_WORDS.get(s['unit'], s['unit'])}"
+        time = f" | {s['minutes']:g} min per unit" if s["minutes"] else ""
+        pay = f" | staff: installer pay {fmt_money(s['pay'])}" if staff and s["pay"] is not None else ""
+        out.append(f"  {s['code']} | {s['name']} | {price}{time}{pay}")
+    out.append("Rules: $750 minimum per job type (cabinet / flooring) is applied automatically; prices may vary if "
+               "extra prep work is needed; discounts are staff only (over 15% needs Chase's approval).")
+    return "\n".join(out)
+
+
 def _image_root():
     from pathlib import Path
 
@@ -417,6 +454,11 @@ class Countertop(BaseModel):
     note: Optional[str] = None
 
 
+class InstallService(BaseModel):
+    code: str = Field(description="From install_options")
+    quantity: float = Field(gt=0, description="In the service's unit (each, sq ft, linear ft, step, job ...)")
+
+
 class QuoteExtra(BaseModel):
     label: str = Field(description="e.g. Installation (estimate)")
     quantity: float
@@ -436,6 +478,10 @@ class CreateQuoteInput(BaseModel):
     shipping: bool = Field(description="Delivery/shipping (true) or pickup (false) - delivery needs the address")
     installation: bool = Field(default=False, description="We install (priced from the install sheet, with time "
                                                            "estimate; installed items are not taxed) - needs the address")
+    install_services: List[InstallService] = Field(default_factory=list, description="Extra install-sheet services "
+                                                   "(demo, fees, backsplash, tile type, trims ...) from install_options")
+    install_discount_percent: float = Field(default=0, description="STAFF ONLY - install discount %")
+    install_discount_approved: bool = Field(default=False, description="True only if Chase approved a discount over 15%")
     extras: List[QuoteExtra] = Field(default_factory=list, description="Other playbook estimates only (not installation)")
     unpriced_items: List[str] = Field(default_factory=list, description="For a designer to price/confirm")
     revises: Optional[str] = Field(default=None, description="Quote number this one replaces (edits)")
@@ -453,6 +499,9 @@ def create_quote(
     customer_email: Optional[str] = None,
     customer_address: Optional[str] = None,
     installation: bool = False,
+    install_services: Optional[List[Any]] = None,
+    install_discount_percent: float = 0,
+    install_discount_approved: bool = False,
     items: Optional[List[Any]] = None,
     countertops: Optional[List[Any]] = None,
     extras: Optional[List[Any]] = None,
@@ -477,8 +526,13 @@ def create_quote(
     items_ = [as_dict(i) for i in items or []]
     counters = [{**as_dict(c), "services": [as_dict(s) for s in as_dict(c).get("services") or []]} for c in countertops or []]
     extras_ = [as_dict(x) for x in extras or []]
-    priced, problems, warnings = price_quote(cat, items_, counters, assembled, shipping, extras_, installation)
-    if (installation or shipping) and not (customer_address or "").strip():
+    services = [as_dict(x) for x in install_services or []]
+    if install_discount_percent and not _is_staff(config):
+        return _json({"status": "not_created", "problems": ["Install discounts can only be given by staff."]})
+    priced, problems, warnings = price_quote(cat, items_, counters, assembled, shipping, extras_,
+                                             installation or bool(services), services,
+                                             install_discount_percent, install_discount_approved)
+    if (installation or services or shipping) and not (customer_address or "").strip():
         problems.append("Installation and delivery need the customer's address - ask for it (street, city, ZIP), "
                         "then call create_quote again with customer_address.")
 
@@ -521,7 +575,7 @@ def create_quote(
         "unpriced_items": unpriced_items or [],
         "assembled": assembled,
         "shipping": shipping,
-        "installation_requested": installation,
+        "installation_requested": installation or bool(services),
         "status": "quoted",
         "notes": notes,
         "revises": revises,
@@ -548,7 +602,9 @@ def create_quote(
         **({"countertops": [{"label": p["label"], "color": p["color"], "sqft": p["sqft"], "total": p["total"]}
                             for p in priced["countertops"]["pieces"]]} if priced["countertops"] else {}),
         **({"installation": {"total": priced["installation"]["total"], "estimated_hours": priced["installation"]["hours"],
-                             "estimated_days": priced["installation"]["days"]}} if priced.get("installation") else {}),
+                             "estimated_days": priced["installation"]["days"],
+                             "lines": [f"{l['label']}: {l['quantity']:g} x {l['rate']}" for l in priced["installation"]["lines"]]}}
+           if priced.get("installation") else {}),
         "extras": [{"label": x["label"], "amount": x["amount"]} for x in priced["extras"]],
         "sales_tax": priced["totals"]["tax"], "tax_rate_percent": priced["totals"]["tax_rate_percent"],
         "grand_total": priced["totals"]["grand_total"], "valid_until": quote["valid_until"],
@@ -556,9 +612,27 @@ def create_quote(
                            "margin_percent": priced["totals"]["margin_percent"],
                            "placeholders_in_use": unconfirmed()}} if _is_staff(config) else {}),
         **({"warnings": warnings} if warnings else {}),
+        "say_exactly": _say_exactly(priced),
         "shown_to_customer": "The quote card with a PDF download is displayed below your reply - don't repeat the "
-                             "table. Mention sales tax / installation time if they apply.",
+                             "table. Use ONLY the numbers in say_exactly - never calculate tax or totals yourself.",
     })
+
+
+def _say_exactly(priced: Dict[str, Any]) -> str:
+    """The figures the assistant may tell the customer, already worded (so it never computes tax itself)."""
+    t = priced["totals"]
+    parts = [f"Total ${t['grand_total']:,.2f}"]
+    if t.get("tax"):
+        parts.append(f"includes ${t['tax']:,.2f} sales tax ({t['tax_rate_percent']:g}% on taxable products)")
+    elif priced.get("installation"):
+        parts.append("no sales tax on the items we install")
+    else:
+        parts.append("no sales tax on this quote")
+    inst = priced.get("installation")
+    if inst:
+        parts.append(f"installation ${inst['total']:,.2f}, about {inst['hours']:g} hours "
+                     f"(~{inst['days']} working day{'s' if inst['days'] != 1 else ''})")
+    return "; ".join(parts) + "."
 
 
 @tool
@@ -796,7 +870,8 @@ def read_uploaded_files(upload_id: str, config: RunnableConfig = None) -> str:
 
 
 CUSTOMER_TOOLS = [
-    find_products, search_products, find_by_size, countertop_options, flooring_quantity, show_line_images, calculator,
+    find_products, search_products, find_by_size, countertop_options, flooring_quantity, install_options,
+    show_line_images, calculator,
     ask_customer, create_quote, get_saved_quote, find_customer, hand_off_to_designer, read_uploaded_files,
 ]
 STAFF_TOOLS = CUSTOMER_TOOLS + [learn_rule, sales_report, set_quote_status]
@@ -807,6 +882,7 @@ TOOL_LABELS = {
     "countertop_options": "Checking countertop colors and prices",
     "find_by_size": "Finding cabinets by size",
     "flooring_quantity": "Working out boxes needed",
+    "install_options": "Checking installation prices",
     "show_line_images": "Showing door styles",
     "sales_report": "Preparing the sales report",
     "set_quote_status": "Updating the quote status",

@@ -113,6 +113,22 @@ class Alias:
 
 
 @dataclass
+class InstallService:
+    """One line of the owner's install price / time / pay sheets."""
+    code: str
+    group: str                    # cabinet | flooring
+    section: str                  # demo | assembly | installation | fees
+    name: str
+    price: Optional[Decimal]      # customer price per unit (None = quoted by the job)
+    unit: str                     # each | sqft | lf | step | location | piece_8ft | section_8ft | night | bag | job | trip
+    minutes: Optional[float]      # labor minutes per unit (time sheet)
+    pay: Optional[Decimal]        # installer pay per unit (pay sheet) = our installation cost
+    source_ref: str
+    quoted: bool = False          # priced by the job -> staff
+    note: str = ""
+
+
+@dataclass
 class Issue:
     business: str
     severity: str                 # error (blocks publishing) | warning (needs a human look) | info (auto-fixed)
@@ -139,6 +155,7 @@ class ImportResult:
     groups: List[MaterialGroup] = field(default_factory=list)
     colors: List[Color] = field(default_factory=list)
     aliases: List[Alias] = field(default_factory=list)
+    install_services: List[InstallService] = field(default_factory=list)
     issues: List[Issue] = field(default_factory=list)
     checks: List[Check] = field(default_factory=list)
     counts: Dict[str, int] = field(default_factory=dict)   # accounting: source rows -> kept / skipped

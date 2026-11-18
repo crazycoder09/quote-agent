@@ -19,6 +19,9 @@ from typing import Any, Dict, List
 from fpdf import FPDF
 from fpdf.fonts import FontFace
 
+UNIT_LABELS = {"each": "each", "sqft": "sq ft", "lf": "linear ft", "step": "step", "location": "location",
+               "piece_8ft": "8 ft piece", "section_8ft": "8 ft section", "night": "night", "bag": "bag", "job": "job",
+               "trip": "trip"}
 PLUM = (43, 23, 69)
 SLATE = (100, 116, 139)
 INK = (15, 23, 42)
@@ -233,7 +236,7 @@ def render_quote_pdf(q: Dict[str, Any]) -> bytes:
                        headings_style=head, line_height=5, borders_layout="HORIZONTAL_LINES", width=width) as table:
             table.row(["Qty", "Description", "Unit", "Rate", "Total"])
             for l in inst["lines"]:
-                table.row([f"{l['quantity']:g}", _latin1(l["label"]), "sq ft" if l["unit"] == "sqft" else "each",
+                table.row([f"{l['quantity']:g}", _latin1(l["label"]), UNIT_LABELS.get(l["unit"], l["unit"]),
                            _money(l["rate"]), _money(l["amount"])])
         pdf.ln(1)
         right_row("Installation total:", inst["total"], bold=True)
@@ -272,7 +275,8 @@ def render_quote_pdf(q: Dict[str, Any]) -> bytes:
     notes.append("Delivery requested - the office will send a separate delivery quote."
                  if q.get("shipping") else "Pickup / no delivery.")
     if inst:
-        notes.append("Installed items are not subject to sales tax. Countertops are fabricated and installed.")
+        notes.append("Installed items are not subject to sales tax. Countertops are fabricated and installed. "
+                     + (inst.get("note") or ""))
     if q.get("notes"):
         notes.append("Notes: " + q["notes"])
     if q.get("footer"):

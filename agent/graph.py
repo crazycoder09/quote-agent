@@ -278,6 +278,9 @@ RULES
   y/n when there are cabinets; delivery or pickup (shipping); installation y/n (we install - priced from the install
   sheet with a time estimate); countertops as color + sq ft (+ service codes). Installation or delivery -> you MUST
   have the customer's address (street, city, ZIP) before create_quote.
+- Installation = the owner's install sheet. Products are installed automatically (installation=true); before quoting
+  an install, ask what the playbook's installation section lists (removing old cabinets / counters / floors, 2nd
+  floor, distance, tile type ...) and add those with install_services (codes from install_options).
 - Sales tax is added by create_quote (products only; not countertops, services, or items we install) - never
   calculate tax yourself; mention it with the total.
 - Flooring / tile: ask whether their square footage already includes waste; if not, recommend adding 10% and use

@@ -106,13 +106,13 @@ def write_report(path: Path, results: List[ImportResult], cfg: Dict[str, Any], r
     out = ["# Catalog build report", "", f"Built {datetime.now():%Y-%m-%d %H:%M}. "
            + (f"**Published** to `{db_path.relative_to(root) if db_path.is_relative_to(root) else db_path}`."
               if published else "**NOT published** - fix the errors below (the previous catalog is unchanged)."), ""]
-    out += ["## Summary", "", "| Business | Items | Quotable | Lines | Charges | Color groups | Colors | Checks | Errors | Warnings |",
-            "|---|---|---|---|---|---|---|---|---|---|"]
+    out += ["## Summary", "", "| Business | Items | Quotable | Lines | Charges | Color groups | Colors | Install services | Checks | Errors | Warnings |",
+            "|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in results:
         sev = Counter(i.severity for i in r.issues)
         ok = sum(c.passed for c in r.checks)
         out.append(f"| {r.business.id} | {len(r.items)} | {sum(i.quotable for i in r.items)} | {len(r.lines)} | "
-                   f"{len(r.charges)} | {len(r.groups)} | {len(r.colors)} | {ok}/{len(r.checks)} | "
+                   f"{len(r.charges)} | {len(r.groups)} | {len(r.colors)} | {len(r.install_services)} | {ok}/{len(r.checks)} | "
                    f"{sev['error']} | {sev['warning']} |")
     out += ["", "## Sources", ""]
     for bid, b in cfg["businesses"].items():
@@ -208,6 +208,10 @@ def write_export(path: Path, results: List[ImportResult]) -> None:
                                  "Note", "As written", "Source"],
           [[c.business, c.code, c.name, c.kind, c.amount, c.unit, c.scope, "yes" if c.needs_staff else "",
             c.note, c.raw, c.source_ref] for r in results for c in r.charges], {3: 40, 9: 50})
+    sheet("Installation", ["Code", "Group", "Section", "Service", "Price", "Unit", "Minutes per unit", "Installer pay",
+                           "Quoted by job", "Note", "Source"],
+          [[s.code, s.group, s.section, s.name, s.price, s.unit, s.minutes, s.pay, "yes" if s.quoted else "",
+            s.note, s.source_ref] for r in results for s in r.install_services], {1: 50, 4: 55, 10: 40})
     sheet("Not offered", ["Business", "Line / color", "Supplier SKU", "Description", "Why not offered", "Source"],
           [[r.business.id, it.line or "", it.sku, it.description, it.not_quotable_reason, it.source_ref]
            for r in results for it in r.items if not it.quotable], {4: 60, 5: 45})
