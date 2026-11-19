@@ -247,8 +247,9 @@ def render_sidebar() -> None:
                 st.button("Delete", key=f"confirmdel_{t['thread_id']}", type="primary", width="stretch",
                           on_click=delete_chat, args=(t["thread_id"],))
 
-        st.markdown('<div class="side-label">Mode</div>', unsafe_allow_html=True)
-        render_mode_switch()
+        # Mode / Staff login - hidden from customers for now. To show it again: remove the "# " on the next 2 lines.
+        # st.markdown('<div class="side-label">Mode</div>', unsafe_allow_html=True)
+        # render_mode_switch()
 
         # Product catalog / prices / AI model status - hidden from customers for now.
         # To show it again: remove the '# ' in front of the lines below (down to the Groq warning).
