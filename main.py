@@ -31,7 +31,7 @@ from agent.rate_limit import AllModelsBusy
 from agent.uploads import jobs as upload_jobs
 from agent.uploads.files import save_batch, upload_settings, validate_batch
 from agent.quote_document import normalize_quote
-from catalog.store import CatalogUnavailable, get_catalog
+from catalog.store import CatalogUnavailable, get_catalog  # noqa: F401 - used by the hidden catalog panel
 
 AVATAR = str(Path(__file__).parent / "assets" / "helper_avatar.svg")
 AVATAR_DATA_URI = "data:image/svg+xml;base64," + base64.b64encode(Path(AVATAR).read_bytes()).decode()
@@ -250,29 +250,31 @@ def render_sidebar() -> None:
         st.markdown('<div class="side-label">Mode</div>', unsafe_allow_html=True)
         render_mode_switch()
 
-        st.markdown('<div class="side-label">Product catalog</div>', unsafe_allow_html=True)
-        pills = []
-        try:
-            cat = get_catalog()
-            built = cat.meta.get("built_at", "")[:16].replace("T", " ")
-            for b in cat.status():
-                detail = (f"{b['items']:,} items" if b["items"] else f"{b['services']} services" if b.get("services")
-                          else f"{b['colors']} colors")
-                pills.append(f'<div class="status-pill"><span class="led ok"></span>'
-                             f'<span class="k">{b["id"]}</span><span>{detail}</span></div>')
-            pills.append(f'<div class="status-pill"><span class="led ok"></span><span class="k">Prices</span>'
-                         f'<span>built {built}</span></div>')
-        except CatalogUnavailable as exc:
-            pills.append(f'<div class="status-pill"><span class="led bad"></span><span class="k">Catalog</span>'
-                         f'<span>{html_escape(str(exc))[:60]}</span></div>')
-        key_ok = agents.is_api_key_configured()
-        pills.append(f'<div class="status-pill"><span class="led {"ok" if key_ok else "bad"}"></span>'
-                     f'<span class="k">AI</span><span>{agents.model_name("agent").replace(":", " · ", 1) if key_ok else "Key missing"}</span></div>')
-        st.markdown("".join(pills), unsafe_allow_html=True)
-        missing = agents.missing_models()
-        if missing:
-            st.warning("Not available on this Groq account: " + ", ".join(missing)
-                       + ". Update models in config/settings.json.", icon=":material/warning:")
+        # Product catalog / prices / AI model status - hidden from customers for now.
+        # To show it again: remove the '# ' in front of the lines below (down to the Groq warning).
+        # st.markdown('<div class="side-label">Product catalog</div>', unsafe_allow_html=True)
+        # pills = []
+        # try:
+        #     cat = get_catalog()
+        #     built = cat.meta.get("built_at", "")[:16].replace("T", " ")
+        #     for b in cat.status():
+        #         detail = (f"{b['items']:,} items" if b["items"] else f"{b['services']} services" if b.get("services")
+        #                   else f"{b['colors']} colors")
+        #         pills.append(f'<div class="status-pill"><span class="led ok"></span>'
+        #                      f'<span class="k">{b["id"]}</span><span>{detail}</span></div>')
+        #     pills.append(f'<div class="status-pill"><span class="led ok"></span><span class="k">Prices</span>'
+        #                  f'<span>built {built}</span></div>')
+        # except CatalogUnavailable as exc:
+        #     pills.append(f'<div class="status-pill"><span class="led bad"></span><span class="k">Catalog</span>'
+        #                  f'<span>{html_escape(str(exc))[:60]}</span></div>')
+        # key_ok = agents.is_api_key_configured()
+        # pills.append(f'<div class="status-pill"><span class="led {"ok" if key_ok else "bad"}"></span>'
+        #              f'<span class="k">AI</span><span>{agents.model_name("agent").replace(":", " · ", 1) if key_ok else "Key missing"}</span></div>')
+        # st.markdown("".join(pills), unsafe_allow_html=True)
+        # missing = agents.missing_models()
+        # if missing:
+        #     st.warning("Not available on this Groq account: " + ", ".join(missing)
+        #                + ". Update models in config/settings.json.", icon=":material/warning:")
 
         if st.session_state["role"] == "staff":
             from catalog.pricing import unconfirmed
@@ -284,7 +286,7 @@ def render_sidebar() -> None:
             render_handoffs()
             render_learned_rules()
 
-        st.caption("LangGraph · LangChain · Groq + OpenRouter · Streamlit")
+        # st.caption("LangGraph · LangChain · Groq + OpenRouter · Streamlit")  # tech stack line - hidden for now
 
 
 def thread_label(t: dict) -> str:
